@@ -1,0 +1,57 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
+.env
+.env.local
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ---- PhotonFlow project rules (from CLAUDE.md) ----
+# Datasets and outputs are not committed
+data/*
+!data/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# ---- Obsidian (vault: paper/lit-review/photonflow) ----
+# Track shared config (app.json, appearance.json, core-plugins.json,
+# community-plugins.json, hotkeys.json, graph.json, snippets/) but
+# exclude per-user UI state and caches. The **/ prefix makes these
+# match the .obsidian/ folder no matter how deeply nested the vault is.
+**/.obsidian/workspace.json
+**/.obsidian/workspace-mobile.json
+**/.obsidian/cache
+**/.obsidian/.trash/
+.trash/
+
+# ---- IDE / editors ----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Claude Code local state ----
+.claude/settings.local.json
