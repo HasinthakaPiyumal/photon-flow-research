@@ -11,7 +11,14 @@
       "Bash(cp ~/Downloads/1712.05877v1.pdf \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Quantization and Training - Jacob et al 2018.pdf\")",
       "Bash(cp \"~/Downloads/A fully real-valued end-to-end optical neural network for generative model \\(1\\).pdf\" \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Optical NN for Generative Model - Zhu et al 2026.pdf\")",
       "Bash(git remote:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m venv .venv)",
+      "Bash(.venv/Scripts/python.exe --version)",
+      "Bash(.venv/Scripts/pip.exe install:*)",
+      "Bash(.venv/Scripts/pip.exe uninstall:*)",
+      "Bash(.venv/Scripts/python.exe -c ':*)",
+      "Bash(py -0)"
     ]
   }
 }

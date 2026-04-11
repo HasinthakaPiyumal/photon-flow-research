@@ -1,0 +1,22 @@
+# PhotonFlow dependencies
+# Install order matters — follow the README Setup steps exactly.
+# torch and torchvision are NOT listed here; install them first via the
+# pytorch.org wheel URL as shown in README Step 3.
+
+# --- Flow matching ---
+torchcfm
+
+# --- Photonic simulation ---
+photontorch
+# torchonn is installed separately (see README Step 4) because it requires
+# mmengine, tensorflow-cpu, and a custom pyutils to be present first.
+
+# --- Evaluation & numerics ---
+numpy
+scipy
+matplotlib
+
+# --- Utilities ---
+pyyaml
+tqdm
+jupyter
