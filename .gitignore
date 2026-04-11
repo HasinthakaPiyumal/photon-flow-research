@@ -10,6 +10,7 @@ build/
 dist/
 pip-wheel-metadata/
 paper/lit-review/pdfs/
+paper/lit-review/pdfs.zip
 # Virtual environments
 .venv/
 venv/
