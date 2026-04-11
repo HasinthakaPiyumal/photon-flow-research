@@ -2,6 +2,8 @@
 
 **Citation:** Dao, Chen, Sohoni, Desai, Poli, Grogan, Liu, Rao, Rudra, Re. "Monarch: Expressive structured matrices for efficient and accurate training." ICML 2022.
 
+**Affiliations:** Stanford University, University at Buffalo. Note: Tri Dao is also a co-author on [[Meng 2022 - ButterflyFlow]], connecting both structured matrix approaches to the same research group.
+
 **Why it matters for us:** This paper is the bridge between flow matching and photonic hardware. Monarch matrices are the structured linear layer that lets us replace attention without losing expressiveness, **and** they have the same computational shape as a cascade of MZI beamsplitters. We did not pick Monarch by accident. We picked it because the math of a Monarch product is essentially the math of an MZI mesh.
 
 ## The one big idea
@@ -18,7 +20,7 @@ Monarch matrices nail all three.
 
 ## What a Monarch matrix actually is
 
-A Monarch matrix M of size n by n, where n = m^2, is defined as:
+A Monarch matrix M of size n x n, where n = m^2, is defined as:
 
 ```
 M = P L P^T R
@@ -26,15 +28,25 @@ M = P L P^T R
 
 where:
 
-- **R** is block diagonal with m blocks of size m by m
-- **L** is also block diagonal with m blocks of size m by m  
-- **P** is a fixed permutation. It reshapes a length-n vector into an m by m matrix, transposes it, and flattens it back
+- **R** is block diagonal with m blocks of size m x m. In formal notation: `R = diag(R_1, R_2, ..., R_m)` where each `R_i` is m x m.
+- **L** is also block diagonal with m blocks of size m x m: `L = diag(L_1, L_2, ..., L_m)`.
+- **P** is a fixed permutation. It reshapes a length-n vector into an m x m matrix, transposes it, and flattens it back. Formally, P is the stride permutation (also called the perfect shuffle) that maps index `i*m + j` to `j*m + i`.
 
 That is the entire definition. Two block diagonal matrices and a permutation between them.
 
-You can think of it as: do m small matrix multiplies along one axis of a 2D reshape, transpose, then do m more small matrix multiplies along the other axis.
+Operationally, computing `y = Mx` for a vector x of length n = m^2:
 
-The number of parameters is `2 * n * sqrt(n)`, much less than the `n^2` of a dense matrix. The number of FLOPs is `O(n * sqrt(n))`, slower asymptotically than a butterfly matrix's `O(n log n)` but faster in wall-clock time on real GPUs because both passes are batched matrix multiplies, which GPUs love.
+```
+1. Reshape x into an m x m matrix X
+2. Multiply each row of X by R_i:   X' = R * X         (m independent m x m multiplies)
+3. Transpose:                        X'' = (X')^T       (the permutation P, free)
+4. Multiply each row of X'' by L_i:  Y = L * X''        (m independent m x m multiplies)
+5. Flatten Y back to vector y
+```
+
+**Parameters:** `2 * m * m^2 = 2 * n * sqrt(n)`, much less than the `n^2` of a dense matrix.
+
+**FLOPs:** `O(n * sqrt(n))` = `O(n^{3/2})`, slower asymptotically than a butterfly matrix's `O(n log n)` but faster in wall-clock time on real GPUs because both passes are batched matrix multiplies (BGEMM), which GPUs love.
 
 ## Why this is the same shape as an MZI mesh
 
@@ -113,5 +125,7 @@ This means in principle we could take a pretrained DiT and project its attention
 
 - [[Index]]
 - [[Shen 2017 - Coherent Nanophotonic Circuits]] for the photonic hardware that turns out to share Monarch's computation graph
+- [[Meng 2022 - ButterflyFlow]] for the same research group's earlier work using butterfly matrices (the parent family of Monarch) in a generative model
+- [[Ning 2025 - StrC-ONN]] for an alternative structured compression (block-circulant) for optical neural networks
 - [[Peebles 2023 - DiT]] for what we are replacing
 - [[Lipman 2023 - Flow Matching]] for the training loss that does not care which kind of linear layer we use

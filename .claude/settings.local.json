@@ -4,7 +4,12 @@
       "Bash(wc:*)",
       "Bash(find:*)",
       "Bash(git fetch:*)",
-      "Bash(git config:*)"
+      "Bash(git config:*)",
+      "Bash(cp ~/Downloads/2209.13774v1.pdf \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/ButterflyFlow - Meng et al 2022.pdf\")",
+      "Bash(cp ~/Downloads/2403.14806v2.pdf \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Photonic-Electronic Integrated Circuits - Ning et al 2024.pdf\")",
+      "Bash(cp ~/Downloads/2502.01670v2.pdf \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/StrC-ONN - Ning et al 2025.pdf\")",
+      "Bash(cp ~/Downloads/1712.05877v1.pdf \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Quantization and Training - Jacob et al 2018.pdf\")",
+      "Bash(cp \"~/Downloads/A fully real-valued end-to-end optical neural network for generative model \\(1\\).pdf\" \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Optical NN for Generative Model - Zhu et al 2026.pdf\")"
     ]
   }
 }

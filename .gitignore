@@ -9,7 +9,7 @@ __pycache__/
 build/
 dist/
 pip-wheel-metadata/
-
+paper/lit-review/pdfs/
 # Virtual environments
 .venv/
 venv/
@@ -55,3 +55,4 @@ desktop.ini
 
 # ---- Claude Code local state ----
 .claude/settings.local.json
+GEMINI_READIN.md
