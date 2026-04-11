@@ -2,44 +2,64 @@
 
 This vault holds the focused literature notes for the PhotonFlow project. The aim is not to summarize each paper completely. The aim is to capture, in plain English, the one or two ideas from each paper that we actually use, and why.
 
-## The nine papers we build on
+## Recommended study order
 
-PhotonFlow sits at the intersection of three worlds: **photonic hardware**, **generative modeling**, and **efficient neural network design**. Each note below covers one paper and ends with a short "How we use it" section.
+Read in this order. Each paper builds on the ones before it. By the end you will understand every design decision in PhotonFlow.
 
-### Photonic hardware foundation
+### Step 1: Understand the hardware constraint
 
-- [[Shen 2017 - Coherent Nanophotonic Circuits]]  
-  The first paper to actually run a neural network on a silicon photonic chip. Shows that an MZI mesh can implement a matrix-vector multiply, and uses a saturable absorber as the nonlinearity. This is the hardware foundation for everything we do.
+> **1. [[Shen 2017 - Coherent Nanophotonic Circuits]]**
+> Start here. This paper shows that MZI meshes can do matrix-vector multiplication at the speed of light using SVD decomposition (`M = UΣV†`). It defines the three photonic primitives we are allowed to use: MZI beamsplitters for linear transforms, saturable absorbers for nonlinearity, and photodetectors for readout. It also exposes the noise sources (phase encoding noise, thermal crosstalk, shot noise) that constrain everything downstream.
+>
+> After reading: you should understand why "optical matrix multiply is fast and cheap" and what breaks when you try to run a full neural network on a chip.
 
-- [[Ning 2024 - Photonic-Electronic Integration]]  
-  Comprehensive survey of photonic-electronic integration for AI accelerators. Provides the hardware specs we simulate: MZI precision (4-6 bits), optical loss (0.1 dB/beamsplitter), detector noise, and thermal crosstalk coefficients.
+> **2. [[Ning 2024 - Photonic-Electronic Integration]]**
+> Read this second. It is the comprehensive survey that quantifies everything Shen demonstrated. You will learn the actual numbers: 4-6 bit effective MZI precision, 0.1 dB loss per beamsplitter, sub-fJ per MAC energy, and the critical bottleneck (opto-electronic-opto conversion kills latency whenever you leave the optical domain). These numbers set our simulation parameters (sigma_s = 0.02, sigma_t = 0.01) and success criteria (< 1 ns/step, < 1 pJ/sample).
+>
+> After reading: you should understand why every operation in PhotonFlow must be photonic-native, and where our noise/precision numbers come from.
 
-- [[Ning 2025 - StrC-ONN]]  
-  Structured compression for optical neural networks. Independent validation that block-diagonal-plus-permutation structures (the Monarch/butterfly family) are the natural fit for MZI hardware. Confirms that structured compression plus quantization works on photonic chips.
+### Step 2: Understand the generative modeling objective
 
-### Generative modeling
+> **3. [[Lipman 2023 - Flow Matching]]**
+> Now shift to the ML side. Flow matching gives us the training loss: learn a vector field `v_theta(x_t, t)` that transports noise to data along straight OT paths. The CFM objective is a simple regression loss (`||v_theta - (x_1 - x_0)||^2`). The key property for us: the loss does not constrain the network architecture at all. You can use any architecture for `v_theta`, which is the freedom PhotonFlow exploits.
+>
+> After reading: you should understand the CFM loss, the OT interpolation `x_t = (1-t)x_0 + tx_1`, and why flow matching is simpler and more stable than GANs or diffusion.
 
-- [[Lipman 2023 - Flow Matching]]  
-  Introduces conditional flow matching. We keep the loss as is and only redesign the network that learns the vector field.
+> **4. [[Peebles 2023 - DiT]]**
+> Read this right after Lipman. DiT is the standard backbone for flow/diffusion models: a transformer with softmax attention and adaLN-Zero conditioning. It achieves FID 2.27 on ImageNet. It is also the architecture we cannot use, because softmax attention and LayerNorm are not photonic. DiT defines the problem: "the best backbone is a transformer, and a transformer cannot run on a photonic chip."
+>
+> After reading: you should understand what we are giving up (attention expressiveness) and what we steal anyway (identity-initialized residuals, timestep conditioning via norm modulation).
 
-- [[Peebles 2023 - DiT]]  
-  Shows that a transformer can replace the U-Net in diffusion. This is the model we are NOT allowed to use, because it relies on softmax attention. It tells us what we are competing against.
+### Step 3: Understand the bridge -- structured matrices
 
-- [[Zhu 2026 - Optical NN for Generative Models]]  
-  Our primary baseline competitor. An optical GAN for image generation. Uses a different generative objective (GAN) and different hardware primitives (MRM-based). PhotonFlow aims to beat it with more stable training (flow matching) and better hardware mapping (Monarch on MZI).
+> **5. [[Dao 2022 - Monarch]]**
+> This is the bridge paper. Monarch matrices (`M = PLP^TR`) are structured linear layers with `O(n√n)` parameters that are both GPU-efficient and, crucially, have the same computational graph as a cascade of MZI beamsplitters. Two block-diagonal multiplies separated by a fixed permutation -- that is literally what a photonic chip does. Monarch replaces attention in our architecture.
+>
+> After reading: you should see why Monarch is not just a compression trick but a natural fit for MZI hardware, and why a pair of Monarch layers (the MM* class) is expressive enough to replace attention.
 
-### Structured linear algebra
+> **6. [[Meng 2022 - ButterflyFlow]]**
+> Read this as validation of the Monarch choice. ButterflyFlow proves that butterfly-structured matrices (the parent family of Monarch) work inside a generative model, achieving Glow-level density estimation on CIFAR-10 and dominating on structured data (MIMIC-III). This answers the reviewer question: "have structured matrices ever been used for generation?" Yes, and they work.
+>
+> After reading: you should understand the relationship between butterfly and Monarch matrices, and why we chose Monarch (2 factors, MZI-friendly) over butterfly (log n factors, GPU-unfriendly).
 
-- [[Dao 2022 - Monarch]]  
-  Defines Monarch matrices, a class of structured linear layers that are both expressive and hardware friendly. We use these to replace attention. The key insight is that a Monarch layer is the same kind of computation graph that an MZI mesh runs.
+### Step 4: Understand hardware-aware training
 
-- [[Meng 2022 - ButterflyFlow]]  
-  Proves that butterfly-structured matrices (the same family as Monarch) work inside generative models. Validates that replacing dense layers with structured matrices does not wreck generation quality.
+> **7. [[Jacob 2018 - Quantization and Training]]**
+> MZI phase shifters have only 4-6 bits of effective precision. Naive rounding of float32 weights to 4 bits destroys accuracy. QAT solves this by simulating quantization during training (`r = S(q - Z)` with straight-through estimator for gradients). We apply 4-bit QAT as a 10K-step fine-tuning stage after CFM training converges.
+>
+> After reading: you should understand the quantization scheme, the straight-through estimator trick, and why QAT is applied as fine-tuning (not from the start) in PhotonFlow.
 
-### Hardware-aware training
+> **8. [[Ning 2025 - StrC-ONN]]**
+> Read this as independent validation of the whole approach. StrC-ONN shows that structured compression (block-circulant, a cousin of Monarch) plus hardware-aware training works on photonic hardware, achieving 74.91% parameter reduction with minimal accuracy loss. It confirms the design pattern: train with hardware imperfections in the loop, not as an afterthought.
+>
+> After reading: you should see that PhotonFlow and StrC-ONN independently converge on the same principle (structured matrices + noise-aware training for photonic chips), reinforcing both approaches.
 
-- [[Jacob 2018 - Quantization and Training]]  
-  Defines quantization-aware training (QAT). We adapt this for 4-bit MZI phase precision. Applied as a fine-tuning stage after flow matching training to bridge the simulation-to-hardware gap.
+### Step 5: Understand the competition
+
+> **9. [[Zhu 2026 - Optical NN for Generative Models]]**
+> Read this last. It is our primary photonic baseline: an optical GAN on a real fabricated chip (4x4 MZI mesh, 42 phase shifters). They generate 8x8 MNIST digits at 1.76 ns latency. The limitations are clear: GAN instability on noisy hardware, tiny scale (64 output neurons), and no noise-aware training or QAT. PhotonFlow addresses all of these with flow matching, Monarch layers, and the full noise+QAT training pipeline.
+>
+> After reading: you should understand exactly where PhotonFlow improves over the state of the art and what claims we need to defend in the paper.
 
 ## How they fit together
 
