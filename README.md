@@ -68,14 +68,8 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 ```
 
 ### Step 4 — Install torchonn and its dependencies
-
-`torchonn` (PyPI v0.0.8) is broken — install from source. Its dependency chain requires three packages first:
-
 ```powershell
-pip install mmengine
-pip install mmcv
-pip install ryaml scienceplots svglib multimethod
-pip install torchonn
+pip install git+https://github.com/HasinthakaPiyumal/pytorch-onn.git
 ```
 
 ### Step 5 — Install remaining dependencies

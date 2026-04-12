@@ -4,6 +4,7 @@ from photonflow.activation import SaturableAbsorber
 from photonflow.normalization import DivisivePowerNorm
 from photonflow.noise import PhotonicNoise
 from photonflow.model import MonarchLayer, PhotonFlowBlock, PhotonFlowModel
+from photonflow.train import CFMLoss, euler_sample, Trainer
 
 __all__ = [
     "SaturableAbsorber",
@@ -12,4 +13,7 @@ __all__ = [
     "MonarchLayer",
     "PhotonFlowBlock",
     "PhotonFlowModel",
+    "CFMLoss",
+    "euler_sample",
+    "Trainer",
 ]

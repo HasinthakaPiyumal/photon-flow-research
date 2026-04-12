@@ -1,0 +1,53 @@
+# exp1_baseline.yaml
+# Standard CFM + self-attention baseline on GPU (MNIST)
+# Purpose: Baseline FID reference — "how good is standard CFM?"
+#
+# This is NOT PhotonFlow. It uses a standard DiT-style transformer with
+# self-attention (nn.MultiheadAttention) to establish the FID target that
+# PhotonFlow (Monarch layers) must match within 10%.
+# Run via: notebooks/02_exp1_baseline.ipynb
+#
+# Architecture: BaselineCFMModel (defined in notebook)
+#   Patchify 28x28 -> 49 patches of 4x4 -> patch_proj(16,256) + pos_embed
+#   -> 4 x BaselineCFMBlock (adaLN-Zero, 4-head attention, GELU MLP)
+#   -> LayerNorm -> out_proj(256,16) -> reshape to 784
+#
+# Sources:
+#   Lipman et al. 2023 — CFM loss (Eq. 23, OT path)
+#   Peebles & Xie 2023 — DiT adaLN-Zero block, zero-init
+
+experiment:
+  name: exp1_baseline
+  description: "Standard CFM + attention on GPU (baseline FID reference)"
+
+model:
+  type: baseline         # BaselineCFMModel (patch-transformer, NOT PhotonFlowModel)
+  in_dim: 784            # MNIST: 28x28x1 = 784
+  hidden_dim: 256        # token embedding dim after patch projection
+  num_layers: 4          # transformer blocks (user spec: 2-4)
+  num_heads: 4           # self-attention heads (user spec: 2-4)
+  patch_size: 4          # 4x4 pixel patches -> 49 patches per image
+  time_dim: 256          # time embedding MLP output dim
+  mlp_ratio: 4.0         # FFN hidden = hidden_dim * mlp_ratio = 1024
+  use_noise: false       # No photonic noise (this is a GPU baseline)
+  sigma_s: 0.0
+  sigma_t: 0.0
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.0e-4             # Adam learning rate (DiT uses 1e-4, no warmup)
+  total_steps: 200000    # 200K steps
+  checkpoint_every: 10000
+  sample_every: 5000
+  sample_steps: 20       # Euler ODE steps for generation
+  seed: 42
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp1_baseline

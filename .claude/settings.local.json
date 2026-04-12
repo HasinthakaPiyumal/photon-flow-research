@@ -38,7 +38,17 @@
       "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe photonflow/model.py\")",
       "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m photonflow.model\")",
       "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -c \\\\\"from photonflow.model import PhotonFlowModel; print\\('import OK'\\)\\\\\"\")",
-      "Bash(powershell -Command \"Get-ChildItem 'D:\\\\hackathons\\\\photon-flow-research\\\\hardware' -ErrorAction SilentlyContinue | Select-Object Name, Length, LastWriteTime\")"
+      "Bash(powershell -Command \"Get-ChildItem 'D:\\\\hackathons\\\\photon-flow-research\\\\hardware' -ErrorAction SilentlyContinue | Select-Object Name, Length, LastWriteTime\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m photonflow.activation 2>&1 | Select-Object -Last 5\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m photonflow.normalization 2>&1 | Select-Object -Last 5\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m photonflow.noise 2>&1 | Select-Object -Last 5\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m hardware.mzi_profiler 2>&1 | Select-Object -Last 8\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m hardware.qat 2>&1 | Select-Object -Last 8\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m eval.fid 2>&1 | Select-Object -Last 8\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m eval.metrics 2>&1 | Select-Object -Last 8\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m photonflow.train\")",
+      "Bash(powershell -Command \"ls 'D:\\\\hackathons\\\\photon-flow-research\\\\configs'\")",
+      "Bash(powershell -Command \"Get-ChildItem 'D:\\\\hackathons\\\\photon-flow-research\\\\configs' | Select-Object Name, Length\")"
     ]
   }
 }
