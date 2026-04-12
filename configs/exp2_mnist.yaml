@@ -1,0 +1,40 @@
+# exp2_mnist.yaml
+# PhotonFlow (Monarch layers) on MNIST — no noise injection
+# Purpose: Sanity check — "do Monarch layers work for generation?"
+#
+# This is the first PhotonFlow experiment. Uses Monarch layers
+# instead of attention, SaturableAbsorber instead of ReLU/GELU,
+# DivisivePowerNorm instead of LayerNorm. No photonic noise yet.
+# Run via: notebooks/03_exp2_photonflow_mnist.ipynb
+
+experiment:
+  name: exp2_photonflow_mnist
+  description: "PhotonFlow with Monarch layers, no noise (MNIST sanity check)"
+
+model:
+  type: photonflow
+  in_dim: 784          # MNIST: 28x28x1 = 784
+  hidden_dim: 256      # 16^2 (perfect square for MonarchLayer)
+  num_blocks: 6        # 6 PhotonFlowBlocks (CLAUDE.md spec)
+  use_noise: false     # No photonic noise in this experiment
+  sigma_s: 0.0
+  sigma_t: 0.0
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.0e-4           # Adam learning rate
+  total_steps: 50000   # 50K steps (Paper Table I)
+  checkpoint_every: 5000
+  sample_every: 5000
+  sample_steps: 20     # Euler ODE steps for generation
+  seed: 42
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp2_photonflow_mnist
