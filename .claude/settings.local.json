@@ -18,7 +18,27 @@
       "Bash(.venv/Scripts/pip.exe install:*)",
       "Bash(.venv/Scripts/pip.exe uninstall:*)",
       "Bash(.venv/Scripts/python.exe -c ':*)",
-      "Bash(py -0)"
+      "Bash(py -0)",
+      "Bash(.venv/Scripts/python.exe photonflow/activation.py)",
+      "Bash(.venv/Scripts/python.exe -c \"from photonflow.activation import SaturableAbsorber; print\\('import OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe photonflow/normalization.py)",
+      "Bash(.venv/Scripts/python.exe -c \"from photonflow.normalization import DivisivePowerNorm; print\\('import OK'\\)\")",
+      "Bash(.venv\\\\Scripts\\\\python.exe photonflow/noise.py)",
+      "Bash(cmd /c \"cd /d D:\\\\hackathons\\\\photon-flow-research && .venv\\\\Scripts\\\\python.exe photonflow/noise.py\")",
+      "Bash(cmd /c \"cd /d D:\\\\hackathons\\\\photon-flow-research && .venv\\\\Scripts\\\\python.exe photonflow/noise.py 2>&1\")",
+      "Bash(cmd /c \"D:\\\\hackathons\\\\photon-flow-research\\\\.venv\\\\Scripts\\\\python.exe D:\\\\hackathons\\\\photon-flow-research\\\\photonflow\\\\noise.py 2>&1\")",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(cmd /c \"D:\\\\hackathons\\\\photon-flow-research\\\\.venv\\\\Scripts\\\\python.exe -c \\\\\"import sys; sys.stdout.reconfigure\\(encoding='utf-8'\\); exec\\(open\\('D:/hackathons/photon-flow-research/photonflow/noise.py'\\).read\\(\\)\\)\\\\\" 2>&1\")",
+      "Bash(cmd /c \"D:\\\\hackathons\\\\photon-flow-research\\\\.venv\\\\Scripts\\\\python.exe -c \\\\\"print\\('hello world'\\)\\\\\" 2>&1\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe photonflow\\\\noise.py\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe photonflow/activation.py\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe photonflow/normalization.py\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe photonflow/noise.py\")",
+      "Bash(.\\\\.venv\\\\Scripts\\\\python.exe photonflow/model.py)",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe photonflow/model.py\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m photonflow.model\")",
+      "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -c \\\\\"from photonflow.model import PhotonFlowModel; print\\('import OK'\\)\\\\\"\")",
+      "Bash(powershell -Command \"Get-ChildItem 'D:\\\\hackathons\\\\photon-flow-research\\\\hardware' -ErrorAction SilentlyContinue | Select-Object Name, Length, LastWriteTime\")"
     ]
   }
 }
