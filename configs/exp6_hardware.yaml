@@ -1,0 +1,66 @@
+# exp6_hardware.yaml
+# Photonic hardware simulation — MZI profiling + performance metrics
+# Purpose: "What are photonic latency/energy numbers?"
+#
+# This is NOT a training config. It configures the hardware simulation
+# pipeline that evaluates a trained model's photonic performance:
+#
+#   1. Load trained checkpoint (exp4 or best available)
+#   2. Decompose weight matrices via SVD -> MZI phase angles (theta, phi)
+#   3. Quantize phases to 4-bit precision (16 discrete levels)
+#   4. Inject optical loss (0.1 dB per beamsplitter stage, cumulative)
+#   5. Add detector noise and thermal crosstalk
+#   6. Reconstruct weight matrices from noisy quantized phases
+#   7. Compute FID with hardware-degraded model
+#   8. Report photonic latency (ns/step) and energy (fJ/MAC, pJ/sample)
+#
+# Success criteria (CLAUDE.md):
+#   - FID within 10% of GPU baseline
+#   - < 1 ns per ODE step
+#   - < 1 pJ per generated sample
+#
+# Run via: notebooks/06_exp6_hardware_simulation.ipynb
+
+experiment:
+  name: exp6_hardware_simulation
+  description: "Photonic hardware simulation via MZI profiling"
+
+model:
+  type: photonflow
+  in_dim: 784
+  hidden_dim: 256
+  num_blocks: 6
+  use_noise: false     # Noise handled by hardware simulation, not training
+  sigma_s: 0.02
+  sigma_t: 0.01
+
+# Hardware simulation parameters
+hardware:
+  # MZI phase decomposition
+  decomposition: reck            # Reck (triangular) decomposition via SVD
+  phase_bits: 4                  # Phase shifter quantization precision
+
+  # Optical loss
+  loss_per_stage_db: 0.1         # dB loss per beamsplitter stage
+
+  # Detector noise
+  detector_noise_std: 0.02       # Photodetector shot noise std
+
+  # Thermal crosstalk
+  thermal_crosstalk_std: 0.01    # Heat coupling between adjacent phase shifters
+  phase_noise_std: 0.005         # Phase perturbation noise
+
+  # Photonic performance model
+  mzi_propagation_delay_ps: 10   # Picoseconds per MZI stage
+  phase_shifter_energy_fj: 10    # Femtojoules per phase shifter per operation
+  detector_energy_fj: 50         # Femtojoules per photodetector readout
+  ode_steps: 20                  # Number of Euler ODE steps for inference
+
+# Evaluation
+evaluation:
+  checkpoint: outputs/exp4_qat_finetune/checkpoints/checkpoint_step10000.pth
+  n_samples_fid: 10000           # Samples to generate for FID computation
+  dataset: mnist
+  batch_size: 256
+
+output_dir: outputs/exp6_hardware_simulation
