@@ -1,0 +1,49 @@
+# exp4_qat.yaml
+# PhotonFlow + noise + 4-bit Quantization-Aware Training (QAT)
+# Purpose: Hardware precision — "does 4-bit QAT preserve quality?"
+#
+# Two-stage strategy (Jacob 2018 + Ning 2024):
+#   Stage 1: Float32 + noise training (exp3) -> converged checkpoint
+#   Stage 2: 4-bit QAT fine-tune (THIS config) -> 5-10K steps
+#
+# QAT simulates the 4-bit effective precision of MZI phase shifters
+# during training. FakeQuantize with STE allows gradients to flow
+# through the round() operation. The model learns weight values
+# that quantize well to 16 discrete levels.
+#
+# IMPORTANT: Load exp3 checkpoint before training with this config!
+# Run via: notebooks/05_exp4_qat_finetune.ipynb
+
+experiment:
+  name: exp4_qat_finetune
+  description: "PhotonFlow + noise + 4-bit QAT fine-tuning"
+
+model:
+  type: photonflow
+  in_dim: 784          # MNIST: 28x28x1 = 784
+  hidden_dim: 256      # 16^2 (perfect square for MonarchLayer)
+  num_blocks: 6        # 6 PhotonFlowBlocks
+  use_noise: true      # Keep noise on during QAT
+  sigma_s: 0.02        # Shot noise std
+  sigma_t: 0.01        # Thermal crosstalk std
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.0e-5           # Lower lr for fine-tuning (10x smaller than training)
+  total_steps: 10000   # 5-10K steps (Paper Table I)
+  checkpoint_every: 2000
+  sample_every: 2000
+  sample_steps: 20     # Euler ODE steps for generation
+  seed: 42
+
+qat:
+  enabled: true        # ENABLED — wrap model with QATWrapper
+  bits: 4              # 4-bit quantization (MZI phase shifter floor, Ning 2024)
+  checkpoint: outputs/exp3_noise_regularized/checkpoints/checkpoint_step50000.pth
+
+output_dir: outputs/exp4_qat_finetune
