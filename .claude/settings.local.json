@@ -48,7 +48,11 @@
       "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m eval.metrics 2>&1 | Select-Object -Last 8\")",
       "Bash(powershell -Command \"cd 'D:\\\\hackathons\\\\photon-flow-research'; .\\\\.venv\\\\Scripts\\\\python.exe -m photonflow.train\")",
       "Bash(powershell -Command \"ls 'D:\\\\hackathons\\\\photon-flow-research\\\\configs'\")",
-      "Bash(powershell -Command \"Get-ChildItem 'D:\\\\hackathons\\\\photon-flow-research\\\\configs' | Select-Object Name, Length\")"
+      "Bash(powershell -Command \"Get-ChildItem 'D:\\\\hackathons\\\\photon-flow-research\\\\configs' | Select-Object Name, Length\")",
+      "Bash(python -c ':*)",
+      "Bash(python update_nb.py)",
+      "Bash(del update_nb.py)",
+      "Bash(python _fix_nb.py)"
     ]
   }
 }
