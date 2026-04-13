@@ -20,11 +20,14 @@ model:
   type: photonflow
   in_dim: 784          # MNIST: 28x28x1 = 784
   hidden_dim: 784      # 28^2 (perfect square for MonarchLayer, matches MNIST in_dim)
-  num_blocks: 8        # 8 blocks (paper spec: 6-8, deeper = more capacity)
+  num_blocks: 8        # 8 blocks (paper spec: 6-8)
   use_noise: true      # ENABLED — inject noise after each Monarch layer
   sigma_s: 0.02        # Shot noise std (CLAUDE.md spec)
   sigma_t: 0.01        # Thermal crosstalk std (CLAUDE.md spec)
-  gate_init: 0.01      # Small positive gate init for immediate Monarch gradient flow
+  gate_init: 0.1       # Open gates for immediate block contribution
+  seq_dim: 49          # Spatial positions (7^2) — M2 sequence axis
+  feat_dim: 16         # Features per position (4^2) — M2 feature axis
+  monarch_init: random # Small random init (Dao 2022: "initialize randomly")
 
 data:
   dataset: mnist
@@ -33,14 +36,12 @@ data:
   num_workers: 2
 
 training:
-  lr: 1.0e-4           # Adam learning rate
+  lr: 3.0e-4           # Higher LR for faster convergence
   total_steps: 200000  # 200K steps (match baseline for fair comparison)
   checkpoint_every: 5000
   sample_every: 5000
   sample_steps: 20     # Euler ODE steps for generation
   seed: 42
-  warmup_steps: 2000   # Linear LR warmup from 0 to lr
-  lr_schedule: cosine  # Cosine decay after warmup
 
 qat:
   enabled: false       # No QAT yet — that's exp4

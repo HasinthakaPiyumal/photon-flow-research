@@ -2,24 +2,27 @@
 # PhotonFlow (Monarch layers) on MNIST — no noise injection
 # Purpose: Sanity check — "do Monarch layers work for generation?"
 #
-# This is the first PhotonFlow experiment. Uses Monarch layers
-# instead of attention, SaturableAbsorber instead of ReLU/GELU,
-# DivisivePowerNorm instead of LayerNorm. No photonic noise yet.
+# M2-style two-axis mixing (Dao et al. NeurIPS 2023):
+#   Sub-layer 1: Monarch(49) spatial mixing across 49 positions (7x7 grid)
+#   Sub-layer 2: Monarch(784) feature mixing on flat vector
 # Run via: notebooks/03_exp2_photonflow_mnist.ipynb
 
 experiment:
   name: exp2_photonflow_mnist
-  description: "PhotonFlow with Monarch layers, no noise (MNIST sanity check)"
+  description: "PhotonFlow M2-style two-axis Monarch mixing (MNIST)"
 
 model:
   type: photonflow
   in_dim: 784          # MNIST: 28x28x1 = 784
   hidden_dim: 784      # 28^2 (perfect square for MonarchLayer, matches MNIST in_dim)
-  num_blocks: 8        # 8 blocks (paper spec: 6-8, deeper = more capacity)
+  num_blocks: 8        # 8 blocks (paper spec: 6-8)
   use_noise: false     # No photonic noise in this experiment
   sigma_s: 0.0
   sigma_t: 0.0
-  gate_init: 0.01      # Small positive gate init for immediate Monarch gradient flow
+  gate_init: 0.1       # Open gates for immediate block contribution
+  seq_dim: 49          # Spatial positions (7^2) — M2 sequence axis
+  feat_dim: 16         # Features per position (4^2) — M2 feature axis
+  monarch_init: random # Small random init (Dao 2022: "initialize randomly")
 
 data:
   dataset: mnist
@@ -28,14 +31,12 @@ data:
   num_workers: 2
 
 training:
-  lr: 1.0e-4           # Adam learning rate
+  lr: 3.0e-4           # Higher LR for faster convergence
   total_steps: 200000  # 200K steps (match baseline for fair comparison)
   checkpoint_every: 5000
   sample_every: 5000
   sample_steps: 20     # Euler ODE steps for generation
   seed: 42
-  warmup_steps: 2000   # Linear LR warmup from 0 to lr
-  lr_schedule: cosine  # Cosine decay after warmup
 
 qat:
   enabled: false

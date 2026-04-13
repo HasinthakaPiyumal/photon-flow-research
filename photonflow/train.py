@@ -291,6 +291,9 @@ class Trainer:
             sigma_s=mcfg.get("sigma_s", 0.02),
             sigma_t=mcfg.get("sigma_t", 0.01),
             gate_init=mcfg.get("gate_init", 0.0),
+            seq_dim=mcfg.get("seq_dim", None),
+            feat_dim=mcfg.get("feat_dim", None),
+            monarch_init=mcfg.get("monarch_init", "identity"),
         )
 
     # ---- QAT unwrap helper (fix #2: no import in non-QAT paths) ----

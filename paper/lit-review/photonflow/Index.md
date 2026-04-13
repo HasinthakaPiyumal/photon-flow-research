@@ -101,6 +101,23 @@ Compare against:
 | 4. Photonic simulation | Profile in torchonn with hardware noise | [[Ning 2024 - Photonic-Electronic Integration]], [[Ning 2025 - StrC-ONN]] |
 | 5. Evaluation | FID, latency, energy vs baselines | [[Peebles 2023 - DiT]], [[Zhu 2026 - Optical NN for Generative Models]] |
 
+### Additional references (added during exp2 optimization)
+
+> **10. [[Dao 2023 - Monarch Mixer (M2)]]**
+> M2 applies Monarch matrices along BOTH the sequence dimension (replacing attention) and model dimension (replacing MLP) to match Transformer quality without attention or MLPs. M2-BERT matches BERT with 25% fewer params/FLOPs. The key insight for PhotonFlow: two-axis Monarch mixing (spatial + feature) is critical for expressivity. PhotonFlow's exp2 adopts this by reshaping the flat 784-dim vector to (49, 16) and applying Monarch(49) for spatial mixing and Monarch(784) for feature mixing.
+>
+> After reading: you should understand why single-axis flat Monarch(784) underperforms, and how two-axis mixing recovers the spatial awareness that attention provides.
+
+> **11. [[Hu 2024 - Lateralization MLP]]**
+> L-MLP demonstrates that fully-MLP-based architectures can match transformers in diffusion generation tasks. Each L-MLP block permutes data dimensions, processes in parallel, merges, then passes through a joint MLP. Relevant as a non-attention baseline for generation and confirms that permutation-based mixing (as in Monarch) is viable for generative models.
+>
+> After reading: you should understand that structured permutation + MLP can be competitive with attention for generation, supporting the Monarch approach.
+
+> **12. [[Shao 2024 - Block Tensor Train]]**
+> BTT generalizes Monarch matrices with tunable rank, interpolating between Monarch and dense. On ImageNet, BTT matches dense ViT-S/32 with 3.8x less compute. Relevant as a potential future upgrade for PhotonFlow if Monarch proves insufficient.
+>
+> After reading: you should understand BTT as a more expressive structured matrix family that could replace Monarch in future PhotonFlow versions.
+
 ## What is intentionally NOT here
 
 - Detailed math derivations. Read the original papers for those.

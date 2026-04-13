@@ -123,7 +123,7 @@ class MonarchLayer(nn.Module):
                      defines M = PLP^TR with no additive term.
     """
 
-    def __init__(self, dim: int, bias: bool = True) -> None:
+    def __init__(self, dim: int, bias: bool = True, init: str = "identity") -> None:
         super().__init__()
         m = math.isqrt(dim)
         if m * m != dim:
@@ -138,18 +138,21 @@ class MonarchLayer(nn.Module):
         self.R = nn.Parameter(torch.empty(m, m, m))
         self.bias = nn.Parameter(torch.zeros(dim)) if bias else None
 
+        self._init_mode = init
         self._init_weights()
 
     def _init_weights(self) -> None:
-        """Initialize L and R as identity blocks.
-
-        With L[i] = R[i] = I for all i, M = PIP^TI = PP^T = I (identity).
-        This means the layer initially passes through its input unchanged,
-        which is stable for flow matching (trivial initial vector field).
-        """
-        for i in range(self.m):
-            nn.init.eye_(self.L.data[i])
-            nn.init.eye_(self.R.data[i])
+        if self._init_mode == "random":
+            # Small random init (Dao 2022 Sec 4: "initialize randomly").
+            # Gives every parameter nonzero gradient from step 0.
+            for i in range(self.m):
+                nn.init.xavier_normal_(self.L.data[i], gain=0.1)
+                nn.init.xavier_normal_(self.R.data[i], gain=0.1)
+        else:
+            # Identity init: M = PIP^TI = PP^T = I.
+            for i in range(self.m):
+                nn.init.eye_(self.L.data[i])
+                nn.init.eye_(self.R.data[i])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply Monarch transform y = PLP^TR x.
@@ -230,14 +233,26 @@ class PhotonFlowBlock(nn.Module):
         sigma_s: float = 0.02,
         sigma_t: float = 0.01,
         gate_init: float = 0.0,
+        seq_dim: int = None,
+        feat_dim: int = None,
+        monarch_init: str = "identity",
     ) -> None:
         super().__init__()
         self.dim = dim
 
+        # --- Two-axis mixing (M2-style, Dao et al. NeurIPS 2023) ---
+        # If seq_dim and feat_dim are set, sub-layer 1 applies Monarch(seq_dim)
+        # along the spatial axis for explicit position mixing (like attention).
+        # This maps to a separate MZI mesh operating on waveguide-routed tokens.
+        self.use_two_axis = seq_dim is not None and feat_dim is not None
+        if self.use_two_axis:
+            assert seq_dim * feat_dim == dim, (
+                f"seq_dim * feat_dim must equal dim: {seq_dim}*{feat_dim} != {dim}"
+            )
+            self.seq_dim = seq_dim
+            self.feat_dim = feat_dim
+
         # --- adaLN-Zero: 6 per-dim vectors (DiT Figure 3, page 4199) ---
-        # scale1, shift1, gate1 for sub-layer 1 ("attention")
-        # scale2, shift2, gate2 for sub-layer 2 ("MLP")
-        # Zero-initialized so both sub-layers start as identity.
         self.adaLN_proj = nn.Sequential(
             nn.SiLU(),
             nn.Linear(time_dim, 6 * dim),
@@ -245,18 +260,22 @@ class PhotonFlowBlock(nn.Module):
         nn.init.zeros_(self.adaLN_proj[-1].weight)
         nn.init.zeros_(self.adaLN_proj[-1].bias)
 
-        # Optional small positive gate init to eliminate bootstrapping delay.
-        # With gate_init > 0, Monarch layers get gradient from step 1 instead
-        # of waiting hundreds of steps for gates to learn nonzero values.
         if gate_init > 0:
             with torch.no_grad():
-                self.adaLN_proj[-1].bias[2 * dim : 3 * dim].fill_(gate_init)  # g1
-                self.adaLN_proj[-1].bias[5 * dim : 6 * dim].fill_(gate_init)  # g2
+                self.adaLN_proj[-1].bias[2 * dim : 3 * dim].fill_(gate_init)
+                self.adaLN_proj[-1].bias[5 * dim : 6 * dim].fill_(gate_init)
 
-        # --- Sub-layer 1: "Attention" (Monarch pair for spatial mixing) ---
+        # --- Sub-layer 1: Spatial mixing ---
         self.norm1 = DivisivePowerNorm(num_features=dim)
-        self.monarch_l = MonarchLayer(dim)
-        self.monarch_r = MonarchLayer(dim)
+        if self.use_two_axis:
+            # M2-style: Monarch(seq_dim) mixes across positions per feature
+            # channel. For MNIST: Monarch(49) over 49 spatial positions.
+            self.monarch_spatial_l = MonarchLayer(seq_dim, init=monarch_init)
+            self.monarch_spatial_r = MonarchLayer(seq_dim, init=monarch_init)
+        else:
+            # Flat Monarch(dim) pair (original design)
+            self.monarch_l = MonarchLayer(dim, init=monarch_init)
+            self.monarch_r = MonarchLayer(dim, init=monarch_init)
         self.absorber1 = SaturableAbsorber()
 
         # --- Photonic noise injection (sub-layer 1 only, training only) ---
@@ -267,15 +286,14 @@ class PhotonFlowBlock(nn.Module):
             self.noise_l = None
             self.noise_r = None
 
-        # --- Sub-layer 2: "MLP" (deeper Monarch-Absorber chain, photonic FFN) ---
-        # Deeper than standard MLP to compensate for no expansion ratio:
+        # --- Sub-layer 2: Feature mixing (flat Monarch(dim), photonic FFN) ---
         # MonarchL2 -> Absorber2 -> MonarchM2 -> Absorber3 -> MonarchR2
         self.norm2 = DivisivePowerNorm(num_features=dim)
-        self.monarch_l2 = MonarchLayer(dim)
+        self.monarch_l2 = MonarchLayer(dim, init=monarch_init)
         self.absorber2 = SaturableAbsorber()
-        self.monarch_m2 = MonarchLayer(dim)
+        self.monarch_m2 = MonarchLayer(dim, init=monarch_init)
         self.absorber3 = SaturableAbsorber()
-        self.monarch_r2 = MonarchLayer(dim)
+        self.monarch_r2 = MonarchLayer(dim, init=monarch_init)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -290,14 +308,28 @@ class PhotonFlowBlock(nn.Module):
         cond = self.adaLN_proj(t_emb)  # (B, 6*dim)
         s1, sh1, g1, s2, sh2, g2 = cond.chunk(6, dim=-1)  # each (B, dim)
 
-        # --- Sub-layer 1: "Attention" (spatial mixing) ---
+        # --- Sub-layer 1: Spatial mixing ---
         h = (1 + s1) * self.norm1(x) + sh1
-        h = self.monarch_l(h)
-        if self.noise_l is not None:
-            h = self.noise_l(h)
-        h = self.monarch_r(h)
-        if self.noise_r is not None:
-            h = self.noise_r(h)
+        if self.use_two_axis:
+            # M2-style: reshape to 2D, apply Monarch(seq_dim) per feature channel
+            B = h.shape[0]
+            h = h.reshape(B, self.seq_dim, self.feat_dim)           # (B, S, F)
+            h = h.permute(0, 2, 1).reshape(B * self.feat_dim, self.seq_dim)  # (B*F, S)
+            h = self.monarch_spatial_l(h)
+            if self.noise_l is not None:
+                h = self.noise_l(h)
+            h = self.monarch_spatial_r(h)
+            if self.noise_r is not None:
+                h = self.noise_r(h)
+            h = h.reshape(B, self.feat_dim, self.seq_dim).permute(0, 2, 1)  # (B, S, F)
+            h = h.reshape(B, self.dim)                              # (B, dim)
+        else:
+            h = self.monarch_l(h)
+            if self.noise_l is not None:
+                h = self.noise_l(h)
+            h = self.monarch_r(h)
+            if self.noise_r is not None:
+                h = self.noise_r(h)
         h = self.absorber1(h)
         x = x + g1 * h
 
@@ -372,6 +404,9 @@ class PhotonFlowModel(nn.Module):
         sigma_s: float = 0.02,
         sigma_t: float = 0.01,
         gate_init: float = 0.0,
+        seq_dim: int = None,
+        feat_dim: int = None,
+        monarch_init: str = "identity",
     ) -> None:
         super().__init__()
         # Validate hidden_dim is a perfect square
@@ -415,6 +450,9 @@ class PhotonFlowModel(nn.Module):
                 sigma_s=sigma_s,
                 sigma_t=sigma_t,
                 gate_init=gate_init,
+                seq_dim=seq_dim,
+                feat_dim=feat_dim,
+                monarch_init=monarch_init,
             )
             for _ in range(num_blocks)
         ])

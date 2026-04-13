@@ -71,7 +71,17 @@
       "Bash(wslpath -w /tmp/butterfly_flow/page-01.png)",
       "Bash(mkdir -p /tmp/qat_pages)",
       "Bash(pdftoppm -png -r 200 \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Quantization and Training - Jacob et al 2018.pdf\" /tmp/qat_pages/page)",
-      "Bash(cygpath:*)"
+      "Bash(cygpath:*)",
+      "mcp__kaggle__get_notebook_info",
+      "WebSearch",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:openreview.net)",
+      "WebFetch(domain:hazyresearch.stanford.edu)",
+      "WebFetch(domain:www.together.ai)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:par.nsf.gov)",
+      "WebFetch(domain:api.github.com)"
     ]
   },
   "enableAllProjectMcpServers": true,
