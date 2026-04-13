@@ -2,26 +2,25 @@
 # PhotonFlow (Monarch layers) on MNIST — no noise injection
 # Purpose: Sanity check — "do Monarch layers work for generation?"
 #
-# Two-axis spatial mixing: Monarch(49) over 49 spatial positions,
-# Monarch(784) for feature mixing. Data normalized to [-1,1].
+# Architecture redesign: hidden_dim=256 (same as baseline) with 8 blocks.
+# This fixes the adaLN parameter bloat (was 84% of block params at dim=784,
+# now balanced). Input/output projections Linear(784<->256) handle the
+# dimension change (electronic boundary, same as baseline's patch projection).
+#
 # Run via: notebooks/03_exp2_photonflow_mnist.ipynb
 
 experiment:
   name: exp2_photonflow_mnist
-  description: "PhotonFlow two-axis Monarch mixing (MNIST)"
+  description: "PhotonFlow with Monarch layers, hidden_dim=256 (MNIST)"
 
 model:
   type: photonflow
   in_dim: 784          # MNIST: 28x28x1 = 784
-  hidden_dim: 784      # 28^2 (perfect square for MonarchLayer)
-  num_blocks: 6        # 6 blocks (paper spec: 6-8)
+  hidden_dim: 256      # 16^2 — same as baseline, balanced adaLN params
+  num_blocks: 8        # More blocks to compensate for smaller per-block capacity
   use_noise: false     # No photonic noise in this experiment
   sigma_s: 0.0
   sigma_t: 0.0
-  gate_init: 0.0       # Proper adaLN-Zero: gates start at zero (identity-at-init)
-  seq_dim: 49          # Spatial positions (7^2) — two-axis sequence mixing
-  feat_dim: 16         # Features per position (4^2) — two-axis feature mixing
-  monarch_init: identity  # Identity init preserves adaLN-Zero stability
 
 data:
   dataset: mnist

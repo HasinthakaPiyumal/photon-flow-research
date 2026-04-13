@@ -32,9 +32,9 @@ After standard training, the model is fine-tuned with 4-bit quantization-aware t
 ## Project Status
 
 - **Literature review:** Complete. 9 reference papers analyzed in depth. Obsidian vault at `paper/lit-review/photonflow/`. Comprehensive Sinhala/English explanation in `CLAUDE_READING.md`.
-- **Novelty confirmed:** Google Scholar search verified — no prior work combines flow matching + Monarch matrices + photonic hardware. "Monarch matrix MZI photonic" returns only 1 result (unrelated to generation). PhotonFlow's co-design approach is unique vs competitor accelerator approaches (PhotoGAN, DiffLight by Suresh/Afifi/Pasricha group).
-- **Implementation:** Sprint in progress (Fri Apr 11 7PM → Sun Apr 13 10AM). See `IMPLEMENTATION_PLAN.md` for detailed timeline.
-- **Codebase:** `.py` modules (core logic) + Google Colab notebooks (experiments, training, eval). All source modules currently skeleton files awaiting implementation.
+- **Novelty confirmed:** Google Scholar search verified — no prior work combines flow matching + Monarch matrices + photonic hardware. PhotonFlow's co-design approach is unique vs competitor accelerator approaches (PhotoGAN, DiffLight by Suresh/Afifi/Pasricha group).
+- **Implementation:** All 12 core `.py` modules fully implemented (~4K lines). 3 of 7 Colab notebooks present (exp1 baseline, exp2 PhotonFlow MNIST, exp3 noise-regularized). Missing: setup/verify, QAT fine-tune, hardware sim, results notebooks.
+- **Codebase:** `.py` modules (core logic) + Google Colab notebooks (experiments, training, eval).
 
 ## Known Competitors (from Google Scholar search)
 
@@ -82,20 +82,23 @@ Success criteria from the paper:
 
 **Approach:** Hybrid — `.py` modules contain core logic (importable classes/functions), Colab notebooks run experiments (import from `.py`, train on Colab GPU, visualize inline).
 
-**Dependencies** (`requirements.txt`):
+**Python version:** Requires **Python 3.10** exactly. `torchonn` depends on `tensorflow-cpu` which does not support Python 3.11+.
 
-```
-torch
-torchcfm          # Conditional flow matching objective
-torchonn           # MZI mesh profiling and photonic simulation
-photontorch        # Optical circuit modeling
-torchvision        # MNIST, CIFAR-10 datasets
-numpy
-scipy
-matplotlib
-pyyaml
-tqdm
-jupyter
+**Local setup (Windows):**
+
+```bash
+# Create venv with Python 3.10
+py -3.10 -m venv .venv
+.venv/Scripts/activate
+
+# PyTorch (CPU for local dev, or cu121 for CUDA)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# torchonn must be installed from GitHub (not PyPI)
+pip install git+https://github.com/HasinthakaPiyumal/pytorch-onn.git
+
+# Everything else
+pip install -r requirements.txt
 ```
 
 **Colab setup cell** (use in every notebook):
@@ -106,15 +109,22 @@ import torch
 assert torch.cuda.is_available(), "GPU required"
 ```
 
-**Running experiments:**
+**Running and testing:**
 
 ```bash
-# Local: test modules
+# Verify imports
 python -c "from photonflow.model import PhotonFlowModel; print('OK')"
+
+# Run inline unit tests (each module has embedded tests in __main__)
+python photonflow/activation.py      # 4 tests: shape, f(0)=0, range, gradients
+python photonflow/normalization.py   # 7 tests: shape, unit norm, zero-safety, gradients, affine
+python photonflow/noise.py           # Noise injection tests
 
 # Colab: open notebooks/03_exp2_photonflow_mnist.ipynb
 # → Run All cells → training starts on Colab GPU
 ```
+
+**No formal test framework** (no pytest/unittest config). Tests are self-contained in each module's `if __name__ == "__main__"` block.
 
 ## Architecture (codebase layout)
 
@@ -193,7 +203,7 @@ Experiments run via Colab notebooks (`notebooks/02-06`). Results collected in `n
 
 ## Implementation notes
 
-- **Model architecture:** `PhotonFlowModel` = 6 `PhotonFlowBlock` stacked. Each block: MonarchL → MonarchR → SaturableAbsorber → DivisivePowerNorm → +TimeEmbed. Time embedding: sinusoidal + 2-layer MLP. Zero-initialized skip connections (α=0 trick from DiT).
+- **Model architecture:** `PhotonFlowModel` stacks 8 `PhotonFlowBlock`s at hidden_dim=256 (with Linear input/output projections from/to data dim). Each block uses adaLN-Zero conditioning (DiT-style): two sub-layers (MonarchL+activation, MonarchR+activation), each gated by learnable scale/shift/gate from the time embedding. Includes Photonic GLU for enhanced feature mixing. Time embedding: sinusoidal + 2-layer MLP. Zero-initialized skip connections (α=0 trick from DiT).
 - **Training:** CFM loss via `torchcfm` or manual MSE implementation. Adam optimizer lr=1e-4. Noise injection toggle from config. Sample generation every 5K steps (Euler ODE solver, 20 steps).
 - **Hardware simulation:** SVD/Clements decomposition → MZI phase angles → phase quantization (4-bit) → optical loss injection (0.1 dB/stage cumulative) → detector noise → thermal crosstalk (correlated Gaussian).
 - **Evaluation:** FID via InceptionV3 pool3 features (2048-dim), Frechet distance formula. Latency = MZI_layers × propagation_delay × ODE_steps. Energy = phase_shifters × energy_per_shifter + detector_energy.
@@ -202,6 +212,6 @@ Experiments run via Colab notebooks (`notebooks/02-06`). Results collected in `n
 
 Undergraduate research by **Hasinthaka Piyumal** (University of Kelaniya, Sri Lanka) and **Senumi Costa** (University of Plymouth, UK).
 
-**Sprint:** Fri Apr 11 7PM → Sun Apr 13 10AM (35h productive, 4h sleep). Equal workload, both members work on all areas. See `IMPLEMENTATION_PLAN.md` for detailed schedule.
+**Sprint:** Fri Apr 11 → Sun Apr 13, 2026. See `IMPLEMENTATION_PLAN.md` for detailed schedule.
 
 Built on the open-source `torchcfm`, `torchonn`, and `photontorch` projects.

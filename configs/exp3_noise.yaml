@@ -16,10 +16,6 @@ model:
   use_noise: true
   sigma_s: 0.02
   sigma_t: 0.01
-  gate_init: 0.0
-  seq_dim: 49
-  feat_dim: 16
-  monarch_init: identity
 
 data:
   dataset: mnist
