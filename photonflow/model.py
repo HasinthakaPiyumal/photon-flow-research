@@ -237,14 +237,17 @@ class PhotonFlowBlock(nn.Module):
         super().__init__()
         self.dim = dim
 
-        # --- adaLN conditioning (electronic, at optical-electronic boundary) ---
-        # Projects time embedding to per-dimension scale and shift vectors.
-        # Zero-initialized so that at step 0: scale=0, shift=0, and the
-        # block reduces to: x + alpha * absorber(monarch(norm(x))).
-        # Inspired by DiT adaLN-Zero (Peebles 2023, Figure 3).
+        # --- adaLN-Zero conditioning (electronic, at optical-electronic boundary) ---
+        # Projects time embedding to per-dimension scale, shift, AND gate vectors.
+        # Zero-initialized so at step 0: scale=0, shift=0, gate=0 → block is
+        # identity (gate kills the photonic path output). As training progresses,
+        # gates gradually open, allowing Monarch layers to contribute — exactly
+        # the DiT adaLN-Zero pattern (Peebles 2023, Figure 3, page 4199).
+        # Hardware: gate = per-channel variable optical attenuation (micro-ring
+        # modulators), controlled by time embedding at the electronic boundary.
         self.adaLN_proj = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(time_dim, 2 * dim),
+            nn.Linear(time_dim, 3 * dim),  # scale + shift + gate
         )
         nn.init.zeros_(self.adaLN_proj[-1].weight)
         nn.init.zeros_(self.adaLN_proj[-1].bias)
@@ -267,12 +270,6 @@ class PhotonFlowBlock(nn.Module):
         # --- Photonic nonlinearity (graphene waveguide) ---
         self.absorber = SaturableAbsorber()          # tanh(0.8x)/0.8
 
-        # --- Residual scale ---
-        # alpha=1.0 so photonic path is a full contributor from step 0.
-        # With identity-initialized Monarch layers, the initial block is
-        # approximately: x + absorber(norm(x)), which is stable.
-        self.alpha = nn.Parameter(torch.ones(1))
-
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -282,14 +279,13 @@ class PhotonFlowBlock(nn.Module):
         Returns:
             (B, dim) output features.
         """
-        # --- adaLN conditioning (electronic) ---
-        cond = self.adaLN_proj(t_emb)              # (B, 2*dim)
-        scale, shift = cond.chunk(2, dim=-1)        # each (B, dim)
+        # --- adaLN-Zero conditioning (electronic) ---
+        cond = self.adaLN_proj(t_emb)              # (B, 3*dim)
+        scale, shift, gate = cond.chunk(3, dim=-1)  # each (B, dim)
 
         # --- Pre-norm + modulation ---
         # Norm is photonic (microring resonator measures optical power).
-        # Scale/shift is electronic (at the optical-electronic boundary,
-        # same physical location as the existing norm gain/bias).
+        # Scale/shift is electronic (at the optical-electronic boundary).
         h = (1 + scale) * self.norm(x) + shift      # (B, dim)
 
         # --- Photonic core (MZI mesh) ---
@@ -304,12 +300,15 @@ class PhotonFlowBlock(nn.Module):
         # --- Photonic nonlinearity ---
         h = self.absorber(h)
 
-        # --- Residual connection ---
-        return x + self.alpha * h
+        # --- Gated residual (DiT adaLN-Zero pattern) ---
+        # gate starts at 0 (zero-init adaLN) → block is identity at step 0.
+        # gate gradually opens during training → simple-to-complex learning.
+        # Hardware: per-channel variable optical attenuator (micro-ring).
+        return x + gate * h
 
     def extra_repr(self) -> str:
         use_noise = self.noise_l is not None
-        return f"dim={self.dim}, use_noise={use_noise}, alpha={self.alpha.item():.4f}"
+        return f"dim={self.dim}, use_noise={use_noise}"
 
 
 # ---------------------------------------------------------------------------
@@ -383,9 +382,11 @@ class PhotonFlowModel(nn.Module):
         self.input_proj = nn.Linear(in_dim, hidden_dim)
         self.output_proj = nn.Linear(hidden_dim, in_dim)
 
-        # Small-random output projection initialization (gain=0.02).
-        # Keeps initial predictions small while enabling gradient flow.
-        nn.init.xavier_uniform_(self.output_proj.weight, gain=0.02)
+        # Zero-init output projection (DiT pattern, Peebles 2023 page 4199).
+        # Combined with zero-init adaLN gates, every block is identity at step 0,
+        # so v_theta = 0 initially. output_proj learns the mean flow first, then
+        # gates gradually open to let Monarch layers contribute corrections.
+        nn.init.zeros_(self.output_proj.weight)
         nn.init.zeros_(self.output_proj.bias)
 
         # --- Time embedding pipeline (electronics-side) ---
@@ -517,7 +518,7 @@ if __name__ == "__main__":
         assert oi.shape == (2, d), f"Shape mismatch for dim={d}"
     print(f"  [PASS] Test 6 - Valid dims: {valid_dims}")
 
-    # --- Test 7: PhotonFlowBlock with adaLN conditioning ---
+    # --- Test 7: PhotonFlowBlock with adaLN-Zero (gate=0 → identity) ---
     block = PhotonFlowBlock(dim=256, time_dim=256, use_noise=False)
     block.eval()
     x7 = torch.randn(4, 256)
@@ -526,17 +527,17 @@ if __name__ == "__main__":
     assert out7.shape == (4, 256), f"Block output shape: {out7.shape}"
     assert not torch.isnan(out7).any(), "NaN in block output"
     assert not torch.isinf(out7).any(), "Inf in block output"
-    # With alpha=1.0 and zero-init adaLN (scale=0, shift=0):
+    # With zero-init adaLN (scale=0, shift=0, gate=0):
     # h = (1+0)*norm(x) + 0 = norm(x)
-    # output = x + alpha * absorber(monarch(norm(x)))
-    # Photonic path should contribute meaningfully
-    photonic_contrib = out7 - x7    # = alpha * absorber(monarch(norm(x)))
-    pc_max = photonic_contrib.abs().max().item()
-    assert pc_max > 0.1, f"Photonic path should contribute, got max={pc_max:.4f}"
-    assert pc_max < 100.0, f"Photonic path shouldn't explode, got max={pc_max:.4f}"
+    # output = x + 0 * absorber(monarch(norm(x))) = x  (identity!)
+    # Block should be near-identity at initialization
+    max_diff7 = (out7 - x7).abs().max().item()
+    assert max_diff7 < 1e-5, (
+        f"Block with gate=0 should be identity, got diff={max_diff7:.2e}"
+    )
     print(
-        f"  [PASS] Test 7 - PhotonFlowBlock(256) + adaLN: "
-        f"photonic contrib max={pc_max:.2f}"
+        f"  [PASS] Test 7 - PhotonFlowBlock(256) + adaLN-Zero: "
+        f"gate=0 -> identity (diff={max_diff7:.2e})"
     )
 
     # --- Test 8: PhotonFlowModel full forward (MNIST: hidden_dim=784) ---
@@ -548,35 +549,45 @@ if __name__ == "__main__":
     assert out8.shape == (4, 784), f"Model output shape: {out8.shape}"
     assert not torch.isnan(out8).any(), "NaN in model output"
     assert not torch.isinf(out8).any(), "Inf in model output"
+    # With zero output_proj + zero gates: v_theta = 0 at initialization
     max_out8 = out8.abs().max().item()
-    assert max_out8 < 50.0, f"Initial output unexpectedly large: {max_out8}"
-    # Gradient check
+    assert max_out8 < 1e-5, f"Init output should be ~0 (zero output_proj), got {max_out8}"
+    # Gradient check — output_proj gets gradient even with zero init
+    # because grad = -2 * target * h_final^T (h_final is non-zero from input_proj)
     model.train()
     out8_train = model(x8, t8)
     out8_train.sum().backward()
-    no_grad = [n for n, p in model.named_parameters() if p.grad is None]
-    assert len(no_grad) == 0, f"Params with no gradient: {no_grad}"
+    # With gate=0, Monarch params get zero gradient (expected — gates haven't opened)
+    # But output_proj and adaLN_proj MUST get gradient (bootstrapping)
+    assert model.output_proj.weight.grad is not None, "output_proj needs gradient"
+    assert model.output_proj.weight.grad.abs().max().item() > 0, "output_proj grad must be non-zero"
+    for i, blk in enumerate(model.blocks):
+        assert blk.adaLN_proj[-1].weight.grad is not None, f"Block {i} adaLN needs gradient"
     n_params = model.count_parameters()
     print(
         f"  [PASS] Test 8 - PhotonFlowModel(784,784,6): (4,784) -> (4,784), "
-        f"no NaN/Inf, init max|out|={max_out8:.4f}, grads flow, {n_params:,} params"
+        f"v_theta=0 at init, output_proj+adaLN get grad, {n_params:,} params"
     )
 
     # --- Test 9: Noise toggle -- deterministic in eval, stochastic in train ---
     model_noise = PhotonFlowModel(in_dim=784, hidden_dim=784, num_blocks=2, use_noise=True)
     x9 = torch.randn(4, 784)
     t9 = torch.rand(4)
-    # Eval mode: deterministic
+    # Eval mode: deterministic (even with noise layers present)
     model_noise.eval()
     out9a = model_noise(x9, t9)
     out9b = model_noise(x9, t9)
     assert torch.equal(out9a, out9b), "Eval mode should be deterministic"
-    # Train mode: stochastic (noise is active)
+    # Train mode: need to open gates AND set output_proj non-zero
+    # to see noise propagation (gate=0 kills signal, zero output_proj kills output)
     model_noise.train()
+    for blk in model_noise.blocks:
+        blk.adaLN_proj[-1].bias.data[2 * blk.dim:].fill_(1.0)  # open gates
+    nn.init.normal_(model_noise.output_proj.weight)  # non-zero output_proj
     out9c = model_noise(x9, t9)
     out9d = model_noise(x9, t9)
-    assert not torch.equal(out9c, out9d), "Train mode with noise should be stochastic"
-    print("  [PASS] Test 9 - Noise toggle: eval=deterministic, train=stochastic")
+    assert not torch.equal(out9c, out9d), "Train mode with open gates + noise should be stochastic"
+    print("  [PASS] Test 9 - Noise toggle: eval=deterministic, train(gates open)=stochastic")
 
     print()
     print("All 9 tests passed.")
