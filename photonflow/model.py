@@ -303,19 +303,17 @@ class PhotonFlowBlock(nn.Module):
             self.monarch_r = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
         self.absorber1 = SaturableAbsorber()
 
-        # --- Photonic noise injection (both sub-layers, training only) ---
-        # Real hardware: every MZI mesh output has shot noise + thermal crosstalk.
-        # Both sub-layers must be noise-regularized for faithful simulation.
+        # --- Photonic noise injection (training only) ---
+        # Each Monarch pair (L→R) maps to ONE MZI mesh on chip.
+        # Noise occurs at the OUTPUT of each mesh (Mourgias-Alexandris 2022,
+        # Shen 2017 Methods), not between L and R within the same mesh.
+        # → 1 noise module per Monarch pair, 2 per block, 16 total for 8 blocks.
         if use_noise:
-            self.noise_l = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
-            self.noise_r = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
-            self.noise_l2 = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
-            self.noise_r2 = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
+            self.noise1 = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
+            self.noise2 = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
         else:
-            self.noise_l = None
-            self.noise_r = None
-            self.noise_l2 = None
-            self.noise_r2 = None
+            self.noise1 = None
+            self.noise2 = None
 
         # --- Sub-layer 2: "MLP" (Monarch-Absorber-Monarch, photonic FFN) ---
         # Mirrors standard MLP: Linear -> Activation -> Linear
@@ -339,45 +337,38 @@ class PhotonFlowBlock(nn.Module):
         s1, sh1, g1, s2, sh2, g2 = cond.chunk(6, dim=-1)  # each (B, dim)
 
         # --- Sub-layer 1: Spatial mixing ---
+        # MonarchL → MonarchR = one MZI mesh → noise at mesh output
         h = (1 + s1) * self.norm1(x) + sh1
         if self.use_two_axis:
-            # M2-style: reshape to 2D, apply Monarch(seq_dim) per feature channel
             B = h.shape[0]
             h = h.reshape(B, self.seq_dim, self.feat_dim)           # (B, S, F)
             h = h.permute(0, 2, 1).reshape(B * self.feat_dim, self.seq_dim)  # (B*F, S)
             h = self.monarch_spatial_l(h)
-            if self.noise_l is not None:
-                h = self.noise_l(h)
             h = self.monarch_spatial_r(h)
-            if self.noise_r is not None:
-                h = self.noise_r(h)
             h = h.reshape(B, self.feat_dim, self.seq_dim).permute(0, 2, 1)  # (B, S, F)
             h = h.reshape(B, self.dim)                              # (B, dim)
         else:
             h = self.monarch_l(h)
-            if self.noise_l is not None:
-                h = self.noise_l(h)
             h = self.monarch_r(h)
-            if self.noise_r is not None:
-                h = self.noise_r(h)
+        if self.noise1 is not None:
+            h = self.noise1(h)      # Shot + thermal noise at MZI mesh output
         h = self.absorber1(h)
         x = self.residual_scale * x + g1 * h
 
         # --- Sub-layer 2: "MLP" (nonlinear feature transform) ---
+        # MonarchL2 → Absorber2 → MonarchR2 = second MZI mesh → noise at output
         h = (1 + s2) * self.norm2(x) + sh2
         h = self.monarch_l2(h)
-        if self.noise_l2 is not None:
-            h = self.noise_l2(h)
         h = self.absorber2(h)
         h = self.monarch_r2(h)
-        if self.noise_r2 is not None:
-            h = self.noise_r2(h)
+        if self.noise2 is not None:
+            h = self.noise2(h)      # Shot + thermal noise at MZI mesh output
         x = self.residual_scale * x + g2 * h
 
         return x
 
     def extra_repr(self) -> str:
-        use_noise = self.noise_l is not None
+        use_noise = self.noise1 is not None
         return f"dim={self.dim}, use_noise={use_noise}"
 
 
@@ -609,10 +600,10 @@ if __name__ == "__main__":
     x4 = torch.randn(4, 64)
     loss = layer4(x4).sum()
     loss.backward()
-    assert layer4.L.grad is not None, "No gradient for L"
-    assert layer4.R.grad is not None, "No gradient for R"
+    assert layer4.Ls[0].grad is not None, "No gradient for L"
+    assert layer4.Rs[0].grad is not None, "No gradient for R"
     assert layer4.bias.grad is not None, "No gradient for bias"
-    print("  [PASS] Test 4 - Gradients flow through L, R, bias")
+    print("  [PASS] Test 4 - Gradients flow through Ls[0], Rs[0], bias")
 
     # --- Test 5: Invalid dim raises ValueError ---
     try:
