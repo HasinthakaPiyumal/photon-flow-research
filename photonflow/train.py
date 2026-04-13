@@ -267,9 +267,9 @@ class Trainer:
         mcfg = self.config.get("model", {})
         return PhotonFlowModel(
             in_dim=mcfg.get("in_dim", 784),
-            hidden_dim=mcfg.get("hidden_dim", 256),
+            hidden_dim=mcfg.get("hidden_dim", 784),
             num_blocks=mcfg.get("num_blocks", 6),
-            time_dim=mcfg.get("time_dim", mcfg.get("hidden_dim", 256)),
+            time_dim=mcfg.get("time_dim", 256),
             use_noise=mcfg.get("use_noise", True),
             sigma_s=mcfg.get("sigma_s", 0.02),
             sigma_t=mcfg.get("sigma_t", 0.01),

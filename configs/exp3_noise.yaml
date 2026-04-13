@@ -19,7 +19,7 @@ experiment:
 model:
   type: photonflow
   in_dim: 784          # MNIST: 28x28x1 = 784
-  hidden_dim: 256      # 16^2 (perfect square for MonarchLayer)
+  hidden_dim: 784      # 28^2 (perfect square for MonarchLayer, matches MNIST in_dim)
   num_blocks: 6        # 6 PhotonFlowBlocks
   use_noise: true      # ENABLED — inject noise after each Monarch layer
   sigma_s: 0.02        # Shot noise std (CLAUDE.md spec)

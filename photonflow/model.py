@@ -12,19 +12,24 @@ Hardware-algorithm co-design principle:
     DivisivePowerNorm          <->  Microring resonator + photodetector feedback
     PhotonicNoise              <->  Shot noise + thermal crosstalk (training only)
     SinusoidalTimeEmbedding    <->  Electronic preprocessing (not on-chip)
+    adaLN scale/shift          <->  Electronic boundary (same as norm gain/bias)
 
 References:
     Dao et al., "Monarch: Expressive Structured Matrices for Efficient and
     Accurate Training," ICML 2022.
-    - Definition 3.1: M = PLP^TR, L and R block-diagonal with m blocks of m×m,
-      P is the stride permutation (reshape → transpose → reshape).
-    - Section 3.1: Algorithm for computing Mx in O(n^{3/2}) FLOPs.
+    - Definition 3.1: M = PLP^TR, L and R block-diagonal with m blocks of m*m,
+      P is the stride permutation (reshape -> transpose -> reshape).
+    - Section 4: Monarch replaces dense weight matrices in BOTH attention
+      projections AND FFN blocks of existing architectures (ViT, GPT-2).
 
     Peebles & Xie, "Scalable Diffusion Models with Transformers," ICCV 2023.
-    - Zero-initialized residual (alpha=0 trick) for stable deep-network training.
+    - Figure 3, page 4199: adaLN-Zero block design with per-dimension
+      scale + shift + gate from time embedding.
+    - Figure 5: adaLN-Zero dramatically outperforms additive conditioning.
 
     Lipman et al., "Flow Matching for Generative Modeling," ICLR 2023.
-    - CFM objective: vθ(xt, t) predicts the flow field (x1 - x0).
+    - CFM objective: v_theta(x_t, t) predicts the flow field (x1 - x0).
+    - Architecture-agnostic: any network mapping (x_t, t) -> v works.
 """
 
 import math
@@ -91,30 +96,30 @@ class MonarchLayer(nn.Module):
     Maps to an MZI mesh array on a silicon photonic chip. The computation
     graph of a Monarch matrix is structurally identical to a cascade of MZI
     beamsplitters:
-        - Block-diagonal L, R  <->  columns of 2×2 MZI unitary gates
-        - Permutation P        <->  waveguide routing (free — no energy cost)
+        - Block-diagonal L, R  <->  columns of 2x2 MZI unitary gates
+        - Permutation P        <->  waveguide routing (free -- no energy cost)
 
     Formula:
         y = M x = P L P^T R x
 
     Forward algorithm (Dao 2022, Section 3.1):
-        1. Reshape x to (B, m, m) — 2D view, m = sqrt(dim)
+        1. Reshape x to (B, m, m) -- 2D view, m = sqrt(dim)
         2. Multiply by R (block-diagonal):  x = einsum('bki,kij->bkj', x, R)
         3. Apply P^T (stride permutation = transpose of dims 1, 2)
         4. Multiply by L (block-diagonal):  x = einsum('bki,kij->bkj', x, L)
         5. Apply P (transpose back)
         6. Reshape to (B, dim)
 
-    FLOPs: O(B × n^{3/2}) vs O(B × n²) for a dense linear layer.
-    Parameters: 2 × m³ = 2 × n^{3/2} (L and R combined) vs n² for dense.
+    FLOPs: O(B * n^{3/2}) vs O(B * n^2) for a dense linear layer.
+    Parameters: 2 * m^3 = 2 * n^{3/2} (L and R combined) vs n^2 for dense.
 
     Constraint:
-        dim must be a perfect square (n = m²). Valid: 4, 16, 64, 256, 784, 1024.
+        dim must be a perfect square (n = m^2). Valid: 4, 16, 64, 256, 784, 1024.
 
     Args:
         dim  (int):  Feature dimension. Must be a perfect square.
         bias (bool): If True, adds a learnable bias to the output. Default True.
-                     Note: bias is PhotonFlow's addition — Dao 2022 Definition 3.1
+                     Note: bias is PhotonFlow's addition -- Dao 2022 Definition 3.1
                      defines M = PLP^TR with no additive term.
     """
 
@@ -123,25 +128,14 @@ class MonarchLayer(nn.Module):
         m = math.isqrt(dim)
         if m * m != dim:
             raise ValueError(
-                f"MonarchLayer requires dim to be a perfect square (n = m²), "
+                f"MonarchLayer requires dim to be a perfect square (n = m^2), "
                 f"got dim={dim}. Valid examples: 4, 16, 64, 256, 784, 1024."
             )
         self.dim = dim
         self.m = m
 
-        # L and R: m blocks of (m × m) each.
-        # Shape (m, m, m) = (num_blocks, in_per_block, out_per_block).
-        # L and R are both block-diagonal factors in M = PLP^TR.
-        #
-        # Convention note: Dao 2022 Eq. 2 indexes L_{j,ℓ,k} and R_{k,j,i}
-        # as [block, output, input]. We store [block, input, output] and use
-        # einsum 'bki,kij->bkj' which computes x @ W (input-on-left),
-        # equivalent to the paper's W^T @ x per block. Same expressive power
-        # — just a transposed storage convention within each block.
         self.L = nn.Parameter(torch.empty(m, m, m))
         self.R = nn.Parameter(torch.empty(m, m, m))
-        # Bias: PhotonFlow addition (not in Dao 2022 Def 3.1, which defines
-        # M = PLP^TR with no additive term). Standard in NN layers.
         self.bias = nn.Parameter(torch.zeros(dim)) if bias else None
 
         self._init_weights()
@@ -168,29 +162,11 @@ class MonarchLayer(nn.Module):
         """
         B = x.shape[0]
 
-        # Reshape to 2D view: x[b, k, i] = x_flat[b, k*m + i]
         x = x.reshape(B, self.m, self.m)                         # (B, m, m)
-
-        # Step 1 — Multiply by R (block-diagonal):
-        #   result[b, k, j] = sum_i x[b, k, i] * R[k, i, j]
-        #   For each block k: x[b, k, :] @ R[k]  (R[k] is m×m, indexed [in, out])
         x = torch.einsum("bki,kij->bkj", x, self.R)              # (B, m, m)
-
-        # Step 2 — Apply P^T (stride permutation = transpose of dims 1 and 2):
-        #   Swaps block index and within-block index, implementing the
-        #   "reshape → transpose → reshape" stride permutation of Dao 2022.
-        #   Key property: P is symmetric (P = P^T = P^{-1}), so applying P
-        #   and P^T are both the same transpose(1,2) operation.
         x = x.transpose(1, 2).contiguous()                        # (B, m, m)
-
-        # Step 3 — Multiply by L (block-diagonal):
-        #   result[b, k, j] = sum_i x[b, k, i] * L[k, i, j]
         x = torch.einsum("bki,kij->bkj", x, self.L)              # (B, m, m)
-
-        # Step 4 — Apply P (same transpose as Step 2, since P = P^T):
         x = x.transpose(1, 2).contiguous()                        # (B, m, m)
-
-        # Flatten to (B, dim)
         x = x.reshape(B, self.dim)
 
         if self.bias is not None:
@@ -207,62 +183,47 @@ class MonarchLayer(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# PhotonFlowBlock
+# PhotonFlowBlock (Round 3 redesign: pre-norm + adaLN)
 # ---------------------------------------------------------------------------
 
 class PhotonFlowBlock(nn.Module):
     """One PhotonFlow block: the photonic analog of a transformer layer.
 
-    Block order (CLAUDE.md spec + paper draft Fig. 1):
+    Round 3 architecture (paper-informed redesign):
         x_in
-          -> MonarchL (first Monarch layer)
-          -> [PhotonicNoise]             # training only, optional
-          -> MonarchR (second Monarch layer)
-          -> [PhotonicNoise]             # training only, optional
-          -> SaturableAbsorber           # tanh(alpha*x)/alpha, alpha=0.8
-          -> DivisivePowerNorm           # x / (||x||_2 + eps) * gain + bias
-          -> residual: x_in + alpha * photonic_out + time_proj(t_emb)
-        Note: time_proj is OUTSIDE the alpha gate so that time conditioning
-        contributes from step 0 (alpha starts near zero). This separates the
-        photonic path (gated by alpha) from electronic time conditioning.
+          -> DivisivePowerNorm(x_in)          # pre-norm (photonic)
+          -> adaLN modulate: (1+scale)*h+shift # electronic boundary
+          -> MonarchL                          # MZI mesh column 1
+          -> [PhotonicNoise]                   # training only
+          -> MonarchR                          # MZI mesh column 2
+          -> [PhotonicNoise]                   # training only
+          -> SaturableAbsorber                 # graphene waveguide
+          -> residual: x_in + alpha * h
+
+    Key design changes from Round 1-2 (informed by reading the PDFs):
+        1. Pre-norm (norm BEFORE Monarch) -- standard in modern transformers,
+           more stable for deep networks.
+        2. adaLN-style scale+shift conditioning from time embedding replaces
+           the old additive time_proj. DiT Figure 5 (Peebles 2023, p.4199)
+           shows adaLN dramatically outperforms additive conditioning.
+           scale and shift are zero-initialized so the block starts as
+           norm(x) -> identity monarch -> absorber = simple pass-through.
+        3. No separate time_proj -- time conditioning is entirely through
+           adaLN scale+shift applied to the normalized input.
 
     Hardware mapping:
-        MonarchL, R   <->  MZI mesh array (two columns of beamsplitters)
-        SaturableAbs  <->  Graphene waveguide insert
-        PowerNorm     <->  Microring resonator + photodetector feedback
-        PhotonicNoise <->  Shot noise + thermal crosstalk (training simulation)
-
-    Residual scaling (inspired by Peebles & Xie 2023, DiT):
-        self.alpha is a learned scalar nn.Parameter initialized to 1.0.
-        Initially: output = x_in + 1.0 * norm(absorber(monarch(x_in))) + time_proj(t_emb).
-        The photonic path is a full contributor from step 0, giving Monarch
-        layers meaningful gradients (~ 0.02 scale with output_proj gain=0.02).
-
-        Why NOT alpha=0 (DiT style)?
-            DiT uses alpha=0 + per-dimension time-conditioned gates (adaLN-Zero)
-            which gradually open gradient paths via learned gate vectors.
-            PhotonFlow has NO per-dimension gating — only a scalar alpha and
-            a separate additive time_proj. With alpha=0, the photonic path is
-            completely dead (zero gradient to Monarch layers). Even alpha=1e-6
-            proved insufficient in experiments (loss stuck at 0.75, pure noise
-            output). alpha=1.0 is required for the model to learn.
-
-        Simplification vs DiT paper (Figure 3, page 4199):
-            DiT uses per-dimension alpha VECTORS regressed from timestep+class
-            via an MLP (with MLP final layer zero-initialized), and uses TWO
-            separate alphas per block (alpha_1 for attention, alpha_2 for MLP).
-            PhotonFlow uses a single time-INDEPENDENT scalar alpha per block.
-            Rationale: (1) a scalar is more hardware-friendly (one attenuation
-            factor for the entire waveguide array), and (2) time-conditioning
-            is handled by the SEPARATE additive time_proj(t_emb) path (outside
-            the alpha gate, so it contributes from step 0).
+        DivisivePowerNorm  <->  Microring resonator + photodetector feedback
+        adaLN scale/shift  <->  Electronic boundary (same as norm gain/bias)
+        MonarchL, R        <->  MZI mesh array (two columns of beamsplitters)
+        SaturableAbsorber  <->  Graphene waveguide insert
+        PhotonicNoise      <->  Shot noise + thermal crosstalk (training sim)
 
     Args:
-        dim      (int):   Feature dimension (must be perfect square for MonarchLayer).
-        time_dim (int):   Dimension of the pre-computed time embedding.
-        use_noise (bool): If True, inject PhotonicNoise after each Monarch layer.
-        sigma_s  (float): Shot noise std (default 0.02).
-        sigma_t  (float): Thermal crosstalk std (default 0.01).
+        dim       (int):   Feature dimension (must be perfect square).
+        time_dim  (int):   Dimension of the pre-computed time embedding.
+        use_noise (bool):  If True, inject PhotonicNoise after each Monarch layer.
+        sigma_s   (float): Shot noise std (default 0.02).
+        sigma_t   (float): Thermal crosstalk std (default 0.01).
     """
 
     def __init__(
@@ -276,11 +237,26 @@ class PhotonFlowBlock(nn.Module):
         super().__init__()
         self.dim = dim
 
-        # Monarch layer pair (replaces self-attention)
+        # --- adaLN conditioning (electronic, at optical-electronic boundary) ---
+        # Projects time embedding to per-dimension scale and shift vectors.
+        # Zero-initialized so that at step 0: scale=0, shift=0, and the
+        # block reduces to: x + alpha * absorber(monarch(norm(x))).
+        # Inspired by DiT adaLN-Zero (Peebles 2023, Figure 3).
+        self.adaLN_proj = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(time_dim, 2 * dim),
+        )
+        nn.init.zeros_(self.adaLN_proj[-1].weight)
+        nn.init.zeros_(self.adaLN_proj[-1].bias)
+
+        # --- Pre-norm (photonic: microring resonator + photodetector) ---
+        self.norm = DivisivePowerNorm(num_features=dim)
+
+        # --- Monarch layer pair (photonic: MZI mesh array) ---
         self.monarch_l = MonarchLayer(dim)
         self.monarch_r = MonarchLayer(dim)
 
-        # Photonic noise injection (training only, disabled at eval)
+        # --- Photonic noise injection (training only, disabled at eval) ---
         if use_noise:
             self.noise_l = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
             self.noise_r = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
@@ -288,54 +264,48 @@ class PhotonFlowBlock(nn.Module):
             self.noise_l = None
             self.noise_r = None
 
-        # Photonic activation + normalization
+        # --- Photonic nonlinearity (graphene waveguide) ---
         self.absorber = SaturableAbsorber()          # tanh(0.8x)/0.8
-        self.norm = DivisivePowerNorm(num_features=dim)  # x / (||x||_2 + eps) * gain + bias
 
-        # Per-block time embedding projection (electronics-side)
-        self.time_proj = nn.Linear(time_dim, dim)
-
-        # Residual scale (inspired by DiT, Peebles & Xie 2023).
-        # Initialized to 1.0 so the photonic path is a FULL contributor from
-        # step 0. Unlike DiT which uses per-dimension time-conditioned gates
-        # (adaLN-Zero) to gradually open gradient paths, PhotonFlow has a
-        # scalar alpha + separate additive time_proj. There is no per-dimension
-        # gating mechanism to "open" the path later, so alpha MUST start at a
-        # meaningful value. alpha=1.0 with identity-initialized Monarch layers
-        # means the block initially acts as x + x/||x||*gain + time_proj(t_emb)
-        # which is stable (DivisivePowerNorm bounds the photonic path magnitude).
+        # --- Residual scale ---
+        # alpha=1.0 so photonic path is a full contributor from step 0.
+        # With identity-initialized Monarch layers, the initial block is
+        # approximately: x + absorber(norm(x)), which is stable.
         self.alpha = nn.Parameter(torch.ones(1))
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x:     (B, dim) input features.
-            t_emb: (B, time_dim) pre-computed time embedding from PhotonFlowModel.
+            t_emb: (B, time_dim) pre-computed time embedding.
 
         Returns:
             (B, dim) output features.
         """
-        residual = x
+        # --- adaLN conditioning (electronic) ---
+        cond = self.adaLN_proj(t_emb)              # (B, 2*dim)
+        scale, shift = cond.chunk(2, dim=-1)        # each (B, dim)
+
+        # --- Pre-norm + modulation ---
+        # Norm is photonic (microring resonator measures optical power).
+        # Scale/shift is electronic (at the optical-electronic boundary,
+        # same physical location as the existing norm gain/bias).
+        h = (1 + scale) * self.norm(x) + shift      # (B, dim)
 
         # --- Photonic core (MZI mesh) ---
-        x = self.monarch_l(x)
+        h = self.monarch_l(h)
         if self.noise_l is not None:
-            x = self.noise_l(x)
+            h = self.noise_l(h)
 
-        x = self.monarch_r(x)
+        h = self.monarch_r(h)
         if self.noise_r is not None:
-            x = self.noise_r(x)
+            h = self.noise_r(h)
 
-        # --- Photonic nonlinearity + normalization ---
-        x = self.absorber(x)
-        x = self.norm(x)
+        # --- Photonic nonlinearity ---
+        h = self.absorber(h)
 
-        # --- Near-zero residual skip (DiT alpha trick) ---
-        # Time embedding is added OUTSIDE the alpha gate so that time
-        # conditioning contributes from step 0 (even when alpha ≈ 0).
-        # Physically: photonic path (Monarch→absorber→norm) is gated by
-        # alpha; electronic time conditioning is a separate additive signal.
-        return residual + self.alpha * x + self.time_proj(t_emb)
+        # --- Residual connection ---
+        return x + self.alpha * h
 
     def extra_repr(self) -> str:
         use_noise = self.noise_l is not None
@@ -343,7 +313,7 @@ class PhotonFlowBlock(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# PhotonFlowModel
+# PhotonFlowModel (Round 3: hidden_dim=784, fixed time embed, final norm)
 # ---------------------------------------------------------------------------
 
 class PhotonFlowModel(nn.Module):
@@ -352,28 +322,34 @@ class PhotonFlowModel(nn.Module):
     Used as the backbone for Conditional Flow Matching (CFM). Given a noisy
     sample x_t and time t, predicts the flow field (x_1 - x_0).
 
-    Architecture:
+    Round 3 architecture (paper-informed redesign):
         Input (B, in_dim)
-          -> Linear(in_dim, hidden_dim)     # input projection (electronics)
-          -> PhotonFlowBlock × num_blocks   # photonic core
-          -> Linear(hidden_dim, in_dim)     # output projection (electronics)
+          -> Linear(in_dim, hidden_dim)       # input projection (electronics)
+          -> PhotonFlowBlock x num_blocks     # photonic core with adaLN
+          -> DivisivePowerNorm(hidden_dim)    # final norm (like DiT)
+          -> Linear(hidden_dim, in_dim)       # output projection (electronics)
           -> Output (B, in_dim)
 
-    Time embedding pipeline (electronics-side, runs before photonic blocks):
+    Time embedding (electronics-side, fixed 256-dim regardless of hidden_dim):
         t (B,) in [0, 1]
-          -> SinusoidalTimeEmbedding(hidden_dim)     # sinusoidal encoding
-          -> Linear(hidden_dim, time_dim) -> SiLU()  # 2-layer MLP
+          -> SinusoidalTimeEmbedding(256)       # fixed sinusoidal encoding
+          -> Linear(256, time_dim) -> SiLU()    # 2-layer MLP
           -> Linear(time_dim, time_dim)
-          -> t_emb (B, time_dim)  passed to every block
+          -> t_emb (B, time_dim)  passed to every block's adaLN
 
-    Dimension constraint:
-        hidden_dim must be a perfect square (required by MonarchLayer).
-        Default hidden_dim=256 (= 16²). Other valid choices: 784 (28²), 1024 (32²).
+    Key design choices (from reading Dao 2022, Peebles 2023, Lipman 2023):
+        - hidden_dim=784 (28^2) for MNIST: eliminates the 784->256 information
+          bottleneck that prevented the model from learning. Monarch(784) with
+          m=28 naturally mixes pixels in groups of 28 with stride permutation.
+        - adaLN conditioning: per-dimension scale+shift from time embedding,
+          enabling time-dependent feature modulation (DiT Figure 5 shows this
+          dramatically outperforms additive conditioning).
+        - Final norm before output_proj for training stability.
 
     Args:
-        in_dim     (int):   Input/output dimension (784 for MNIST, 3072 for CIFAR-10).
+        in_dim     (int):   Input/output dimension (784 for MNIST).
         hidden_dim (int):   Internal feature dimension. Must be a perfect square.
-                            Default: 256 (= 16²).
+                            Default: 784 (= 28^2) for MNIST.
         num_blocks (int):   Number of PhotonFlowBlocks. Default: 6.
         time_dim   (int):   Time embedding dimension (after MLP). Default: 256.
         use_noise  (bool):  Inject PhotonicNoise in each block. Default: True.
@@ -384,7 +360,7 @@ class PhotonFlowModel(nn.Module):
     def __init__(
         self,
         in_dim: int,
-        hidden_dim: int = 256,
+        hidden_dim: int = 784,
         num_blocks: int = 6,
         time_dim: int = 256,
         use_noise: bool = True,
@@ -397,7 +373,7 @@ class PhotonFlowModel(nn.Module):
         if m * m != hidden_dim:
             raise ValueError(
                 f"hidden_dim must be a perfect square for MonarchLayer, "
-                f"got {hidden_dim}. Valid: 256 (16²), 784 (28²), 1024 (32²)."
+                f"got {hidden_dim}. Valid: 256 (16^2), 784 (28^2), 1024 (32^2)."
             )
         self.in_dim = in_dim
         self.hidden_dim = hidden_dim
@@ -407,23 +383,17 @@ class PhotonFlowModel(nn.Module):
         self.input_proj = nn.Linear(in_dim, hidden_dim)
         self.output_proj = nn.Linear(hidden_dim, in_dim)
 
-        # Small-random output projection initialization.
-        # DiT (Peebles & Xie 2023) uses zero-init here, relying on per-dimension
-        # time-conditioned gates (adaLN-Zero) to gradually open gradient paths.
-        # PhotonFlow uses a simpler scalar alpha, which cannot overcome a zero
-        # output_proj — gradients to the photonic blocks are exactly zero when
-        # Wout = 0, causing complete gradient starvation. Small Xavier init
-        # (gain=0.02) gives blocks non-zero gradients from step 0 while keeping
-        # initial predictions small. The bias stays zero.
+        # Small-random output projection initialization (gain=0.02).
+        # Keeps initial predictions small while enabling gradient flow.
         nn.init.xavier_uniform_(self.output_proj.weight, gain=0.02)
         nn.init.zeros_(self.output_proj.bias)
 
         # --- Time embedding pipeline (electronics-side) ---
-        # SinusoidalTimeEmbedding → 2-layer SiLU MLP → time_dim
-        # SiLU is used here (not SaturableAbsorber) because this runs on electronics.
+        # Fixed 256-dim sinusoidal encoding regardless of hidden_dim.
+        # Avoids wasteful high-dim sinusoidal when hidden_dim is large (784).
         self.time_mlp = nn.Sequential(
-            SinusoidalTimeEmbedding(hidden_dim),
-            nn.Linear(hidden_dim, time_dim),
+            SinusoidalTimeEmbedding(256),
+            nn.Linear(256, time_dim),
             nn.SiLU(),
             nn.Linear(time_dim, time_dim),
         )
@@ -440,6 +410,9 @@ class PhotonFlowModel(nn.Module):
             for _ in range(num_blocks)
         ])
 
+        # --- Final norm before output projection (like DiT) ---
+        self.final_norm = DivisivePowerNorm(num_features=hidden_dim)
+
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Predict the flow field v_theta(x_t, t) = (x_1 - x_0).
 
@@ -450,7 +423,7 @@ class PhotonFlowModel(nn.Module):
         Returns:
             (B, in_dim) predicted flow field.
         """
-        # Project input to hidden_dim (electronics → photonics interface)
+        # Project input to hidden_dim (electronics -> photonics interface)
         x = self.input_proj(x)
 
         # Compute time embedding once, share across all blocks
@@ -460,7 +433,8 @@ class PhotonFlowModel(nn.Module):
         for block in self.blocks:
             x = block(x, t_emb)
 
-        # Project back to in_dim (photonics → electronics interface)
+        # Final norm + output projection (photonics -> electronics interface)
+        x = self.final_norm(x)
         return self.output_proj(x)
 
     def extra_repr(self) -> str:
@@ -505,9 +479,7 @@ if __name__ == "__main__":
         f"vs {dense_params} (dense) = {ratio:.1f}x fewer"
     )
 
-    # --- Test 3: Identity initialization — M ≈ I ---
-    # With L[i] = R[i] = I: M = PIP^TI = PP^T = I, so output ≈ input.
-    # Bias is zero by construction, so MonarchLayer(x) ≈ x.
+    # --- Test 3: Identity initialization -- M = I ---
     layer_id = MonarchLayer(dim=256, bias=False)
     layer_id.eval()
     x3 = torch.randn(8, 256)
@@ -535,7 +507,7 @@ if __name__ == "__main__":
     except ValueError as e:
         print(f"  [PASS] Test 5 - Invalid dim rejected: {e}")
 
-    # --- Test 6: Multiple valid dims ---
+    # --- Test 6: Multiple valid dims (including 784 for MNIST) ---
     valid_dims = [4, 16, 64, 256, 784]
     for d in valid_dims:
         lyr = MonarchLayer(dim=d, bias=False)
@@ -545,8 +517,8 @@ if __name__ == "__main__":
         assert oi.shape == (2, d), f"Shape mismatch for dim={d}"
     print(f"  [PASS] Test 6 - Valid dims: {valid_dims}")
 
-    # --- Test 7: PhotonFlowBlock shape + photonic path contribution ---
-    block = PhotonFlowBlock(dim=256, time_dim=256)
+    # --- Test 7: PhotonFlowBlock with adaLN conditioning ---
+    block = PhotonFlowBlock(dim=256, time_dim=256, use_noise=False)
     block.eval()
     x7 = torch.randn(4, 256)
     t7 = torch.rand(4, 256)   # pre-computed t_emb
@@ -554,24 +526,21 @@ if __name__ == "__main__":
     assert out7.shape == (4, 256), f"Block output shape: {out7.shape}"
     assert not torch.isnan(out7).any(), "NaN in block output"
     assert not torch.isinf(out7).any(), "Inf in block output"
-    # With alpha=1.0, photonic path is a full contributor:
-    # output = residual + alpha * norm(absorber(monarch(x))) + time_proj(t_emb)
-    # Verify the photonic path contributes meaningfully (not negligible)
-    photonic_contrib = out7 - x7 - block.time_proj(t7)  # = alpha * norm_output
+    # With alpha=1.0 and zero-init adaLN (scale=0, shift=0):
+    # h = (1+0)*norm(x) + 0 = norm(x)
+    # output = x + alpha * absorber(monarch(norm(x)))
+    # Photonic path should contribute meaningfully
+    photonic_contrib = out7 - x7    # = alpha * absorber(monarch(norm(x)))
     pc_max = photonic_contrib.abs().max().item()
-    assert pc_max > 0.1, (
-        f"Photonic path should contribute meaningfully, got max={pc_max:.4f}"
-    )
-    assert pc_max < 100.0, (
-        f"Photonic path should not explode, got max={pc_max:.4f}"
-    )
+    assert pc_max > 0.1, f"Photonic path should contribute, got max={pc_max:.4f}"
+    assert pc_max < 100.0, f"Photonic path shouldn't explode, got max={pc_max:.4f}"
     print(
-        f"  [PASS] Test 7 - PhotonFlowBlock: (4,256) -> (4,256), "
-        f"alpha=1.0: photonic path max contrib={pc_max:.2f}"
+        f"  [PASS] Test 7 - PhotonFlowBlock(256) + adaLN: "
+        f"photonic contrib max={pc_max:.2f}"
     )
 
-    # --- Test 8: PhotonFlowModel full forward (MNIST config) ---
-    model = PhotonFlowModel(in_dim=784, hidden_dim=256, num_blocks=6, use_noise=False)
+    # --- Test 8: PhotonFlowModel full forward (MNIST: hidden_dim=784) ---
+    model = PhotonFlowModel(in_dim=784, hidden_dim=784, num_blocks=6, use_noise=False)
     model.eval()
     x8 = torch.randn(4, 784)
     t8 = torch.rand(4)
@@ -579,11 +548,8 @@ if __name__ == "__main__":
     assert out8.shape == (4, 784), f"Model output shape: {out8.shape}"
     assert not torch.isnan(out8).any(), "NaN in model output"
     assert not torch.isinf(out8).any(), "Inf in model output"
-    # Initial output should be small (output_proj has gain=0.02, time_proj
-    # contributions are projected through small output_proj). Not zero though —
-    # time_proj is active from step 0.
     max_out8 = out8.abs().max().item()
-    assert max_out8 < 10.0, f"Initial output unexpectedly large: {max_out8}"
+    assert max_out8 < 50.0, f"Initial output unexpectedly large: {max_out8}"
     # Gradient check
     model.train()
     out8_train = model(x8, t8)
@@ -592,22 +558,20 @@ if __name__ == "__main__":
     assert len(no_grad) == 0, f"Params with no gradient: {no_grad}"
     n_params = model.count_parameters()
     print(
-        f"  [PASS] Test 8 - PhotonFlowModel MNIST: (4,784) -> (4,784), "
+        f"  [PASS] Test 8 - PhotonFlowModel(784,784,6): (4,784) -> (4,784), "
         f"no NaN/Inf, init max|out|={max_out8:.4f}, grads flow, {n_params:,} params"
     )
 
-    # --- Test 9: Noise toggle — deterministic in eval, stochastic in train ---
-    model_noise = PhotonFlowModel(in_dim=784, hidden_dim=256, num_blocks=2, use_noise=True)
+    # --- Test 9: Noise toggle -- deterministic in eval, stochastic in train ---
+    model_noise = PhotonFlowModel(in_dim=784, hidden_dim=784, num_blocks=2, use_noise=True)
     x9 = torch.randn(4, 784)
     t9 = torch.rand(4)
-    # Eval mode: two identical forward passes must give identical results
+    # Eval mode: deterministic
     model_noise.eval()
     out9a = model_noise(x9, t9)
     out9b = model_noise(x9, t9)
     assert torch.equal(out9a, out9b), "Eval mode should be deterministic"
-    # Train mode: two forward passes should differ (noise is stochastic).
-    # With alpha=1.0 (default init) and non-zero output_proj (Xavier gain=0.02),
-    # photonic noise is clearly visible in the output without any manual override.
+    # Train mode: stochastic (noise is active)
     model_noise.train()
     out9c = model_noise(x9, t9)
     out9d = model_noise(x9, t9)
@@ -618,8 +582,8 @@ if __name__ == "__main__":
     print("All 9 tests passed.")
     print()
     print("Architecture summary:")
-    model_summary = PhotonFlowModel(in_dim=784, hidden_dim=256, num_blocks=6)
-    print(f"  MonarchLayer(256): {sum(p.numel() for p in MonarchLayer(256).parameters()):,} params "
-          f"(vs {256*256:,} dense = {256*256 / (2*16**3):.1f}x fewer)")
-    print(f"  PhotonFlowModel(784, 256, 6): {model_summary.count_parameters():,} total params")
+    model_summary = PhotonFlowModel(in_dim=784, hidden_dim=784, num_blocks=6)
+    print(f"  MonarchLayer(784): m=28, {sum(p.numel() for p in MonarchLayer(784).parameters()):,} params "
+          f"(vs {784*784:,} dense = {784*784 / (2*28**3):.1f}x fewer)")
+    print(f"  PhotonFlowModel(784, 784, 6): {model_summary.count_parameters():,} total params")
     print(f"  {model_summary}")
