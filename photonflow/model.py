@@ -232,12 +232,20 @@ class PhotonFlowBlock(nn.Module):
         PowerNorm     <->  Microring resonator + photodetector feedback
         PhotonicNoise <->  Shot noise + thermal crosstalk (training simulation)
 
-    Near-zero residual scaling (inspired by Peebles & Xie 2023, DiT):
-        self.alpha is a learned scalar nn.Parameter initialized to 1e-6.
-        Initially: output ≈ x_in + eps * block(x_in) + time_proj(t_emb).
-        The near-zero (not exact-zero) initialization avoids the gradient
-        starvation problem where alpha=0 blocks all gradient flow through
-        the photonic path, preventing the model from learning.
+    Residual scaling (inspired by Peebles & Xie 2023, DiT):
+        self.alpha is a learned scalar nn.Parameter initialized to 1.0.
+        Initially: output = x_in + 1.0 * norm(absorber(monarch(x_in))) + time_proj(t_emb).
+        The photonic path is a full contributor from step 0, giving Monarch
+        layers meaningful gradients (~ 0.02 scale with output_proj gain=0.02).
+
+        Why NOT alpha=0 (DiT style)?
+            DiT uses alpha=0 + per-dimension time-conditioned gates (adaLN-Zero)
+            which gradually open gradient paths via learned gate vectors.
+            PhotonFlow has NO per-dimension gating — only a scalar alpha and
+            a separate additive time_proj. With alpha=0, the photonic path is
+            completely dead (zero gradient to Monarch layers). Even alpha=1e-6
+            proved insufficient in experiments (loss stuck at 0.75, pure noise
+            output). alpha=1.0 is required for the model to learn.
 
         Simplification vs DiT paper (Figure 3, page 4199):
             DiT uses per-dimension alpha VECTORS regressed from timestep+class
@@ -287,12 +295,16 @@ class PhotonFlowBlock(nn.Module):
         # Per-block time embedding projection (electronics-side)
         self.time_proj = nn.Linear(time_dim, dim)
 
-        # Near-zero residual scale (inspired by DiT, Peebles & Xie 2023).
-        # Initialized to 1e-6 (not exact zero) to avoid gradient starvation:
-        # with alpha=0 + zero output_proj, blocks receive zero gradient and
-        # never learn. Near-zero init breaks this trap while keeping the
-        # stable-initialization benefit. See class docstring for full rationale.
-        self.alpha = nn.Parameter(torch.full((1,), 1e-6))
+        # Residual scale (inspired by DiT, Peebles & Xie 2023).
+        # Initialized to 1.0 so the photonic path is a FULL contributor from
+        # step 0. Unlike DiT which uses per-dimension time-conditioned gates
+        # (adaLN-Zero) to gradually open gradient paths, PhotonFlow has a
+        # scalar alpha + separate additive time_proj. There is no per-dimension
+        # gating mechanism to "open" the path later, so alpha MUST start at a
+        # meaningful value. alpha=1.0 with identity-initialized Monarch layers
+        # means the block initially acts as x + x/||x||*gain + time_proj(t_emb)
+        # which is stable (DivisivePowerNorm bounds the photonic path magnitude).
+        self.alpha = nn.Parameter(torch.ones(1))
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -533,7 +545,7 @@ if __name__ == "__main__":
         assert oi.shape == (2, d), f"Shape mismatch for dim={d}"
     print(f"  [PASS] Test 6 - Valid dims: {valid_dims}")
 
-    # --- Test 7: PhotonFlowBlock shape + time embedding ---
+    # --- Test 7: PhotonFlowBlock shape + photonic path contribution ---
     block = PhotonFlowBlock(dim=256, time_dim=256)
     block.eval()
     x7 = torch.randn(4, 256)
@@ -541,17 +553,21 @@ if __name__ == "__main__":
     out7 = block(x7, t7)
     assert out7.shape == (4, 256), f"Block output shape: {out7.shape}"
     assert not torch.isnan(out7).any(), "NaN in block output"
-    # With alpha~0, output ~ residual + time_proj(t_emb)
-    # The photonic path contributes alpha*norm(absorber(x)) ~ 1e-6 * unit_vec ~ 0
-    # time_proj(t_emb) is the dominant non-residual contribution
-    expected7 = x7 + block.time_proj(t7)
-    max_diff7 = (out7 - expected7).abs().max().item()
-    assert max_diff7 < 1e-3, (
-        f"Block with alpha~0 should be ~ residual + time_proj, got diff={max_diff7}"
+    assert not torch.isinf(out7).any(), "Inf in block output"
+    # With alpha=1.0, photonic path is a full contributor:
+    # output = residual + alpha * norm(absorber(monarch(x))) + time_proj(t_emb)
+    # Verify the photonic path contributes meaningfully (not negligible)
+    photonic_contrib = out7 - x7 - block.time_proj(t7)  # = alpha * norm_output
+    pc_max = photonic_contrib.abs().max().item()
+    assert pc_max > 0.1, (
+        f"Photonic path should contribute meaningfully, got max={pc_max:.4f}"
+    )
+    assert pc_max < 100.0, (
+        f"Photonic path should not explode, got max={pc_max:.4f}"
     )
     print(
         f"  [PASS] Test 7 - PhotonFlowBlock: (4,256) -> (4,256), "
-        f"alpha~0: output ~ residual + time_proj (diff={max_diff7:.2e})"
+        f"alpha=1.0: photonic path max contrib={pc_max:.2f}"
     )
 
     # --- Test 8: PhotonFlowModel full forward (MNIST config) ---
@@ -590,12 +606,9 @@ if __name__ == "__main__":
     out9b = model_noise(x9, t9)
     assert torch.equal(out9a, out9b), "Eval mode should be deterministic"
     # Train mode: two forward passes should differ (noise is stochastic).
-    # With the fixed init, alpha is already 1e-6 (not zero) and output_proj
-    # is already non-zero (Xavier gain=0.02). But alpha=1e-6 makes the noise
-    # contribution very small. Set alpha=1 to make noise clearly visible.
+    # With alpha=1.0 (default init) and non-zero output_proj (Xavier gain=0.02),
+    # photonic noise is clearly visible in the output without any manual override.
     model_noise.train()
-    for blk in model_noise.blocks:
-        blk.alpha.data.fill_(1.0)
     out9c = model_noise(x9, t9)
     out9d = model_noise(x9, t9)
     assert not torch.equal(out9c, out9d), "Train mode with noise should be stochastic"

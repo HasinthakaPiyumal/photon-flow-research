@@ -129,8 +129,17 @@ class DivisivePowerNorm(nn.Module):
         self.num_features = num_features
 
         # Learnable affine parameters (electronic post-processing)
+        # gain is initialized to sqrt(num_features) to compensate for the
+        # magnitude compression of divisive normalization. For a 256-dim
+        # vector with unit-variance entries, ||x||_2 ≈ sqrt(256) = 16, so
+        # x / ||x|| compresses magnitudes ~16x. Initializing gain = sqrt(dim)
+        # exactly cancels this, making the layer initially act as a direction-
+        # preserving rescaler. This also cancels the 1/||x|| gradient
+        # attenuation: ∂out/∂in ∝ gain/||x|| ≈ sqrt(dim)/sqrt(dim) = 1.
         if num_features is not None and learnable:
-            self.gain = nn.Parameter(torch.ones(num_features))
+            self.gain = nn.Parameter(
+                torch.full((num_features,), num_features ** 0.5)
+            )
             self.bias = nn.Parameter(torch.zeros(num_features))
         else:
             self.gain = None
@@ -240,12 +249,20 @@ if __name__ == "__main__":
     x6 = torch.randn(8, 64)
     out6 = norm_aff(x6)
     assert out6.shape == x6.shape, f"Affine shape: {out6.shape}"
-    # With gain=1, bias=0 (init), output should be same as non-affine
+    # Gain is initialized to sqrt(num_features) = 8.0 for dim=64.
+    # Verify the init value:
+    expected_gain_init = 64 ** 0.5  # = 8.0
+    assert torch.allclose(
+        norm_aff.gain.data,
+        torch.full((64,), expected_gain_init),
+        atol=1e-5,
+    ), f"Gain should init to sqrt(64)=8.0, got {norm_aff.gain.data[0].item():.4f}"
+    # With gain=sqrt(64)=8.0, bias=0: output = 8.0 * plain_norm(x)
     out6_plain = DivisivePowerNorm(eps=1e-6)(x6)
-    assert torch.allclose(out6, out6_plain, atol=1e-5), (
-        "Affine with gain=1, bias=0 should match plain DivisivePowerNorm"
+    assert torch.allclose(out6, expected_gain_init * out6_plain, atol=1e-4), (
+        "Affine with gain=sqrt(64), bias=0 should be sqrt(64) * plain norm"
     )
-    # Modify gain and bias → output should change
+    # Modify gain and bias -> output should change
     norm_aff.gain.data.fill_(2.0)
     norm_aff.bias.data.fill_(0.5)
     out6_mod = norm_aff(x6)
@@ -261,7 +278,7 @@ if __name__ == "__main__":
     assert x6g.grad is not None, "Affine: no gradient for input"
     assert norm_aff2.gain.grad is not None, "Affine: no gradient for gain"
     assert norm_aff2.bias.grad is not None, "Affine: no gradient for bias"
-    print(f"  [PASS] Test 6 — learnable affine: gain/bias, gradients flow")
+    print(f"  [PASS] Test 6 — learnable affine: gain init=sqrt(64)={expected_gain_init:.1f}, gradients flow")
 
     # --- Test 7: no affine when num_features is None ---
     norm_no_aff = DivisivePowerNorm(eps=1e-6)
