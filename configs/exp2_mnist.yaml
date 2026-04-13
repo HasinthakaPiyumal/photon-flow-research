@@ -2,27 +2,26 @@
 # PhotonFlow (Monarch layers) on MNIST — no noise injection
 # Purpose: Sanity check — "do Monarch layers work for generation?"
 #
-# M2-style two-axis mixing (Dao et al. NeurIPS 2023):
-#   Sub-layer 1: Monarch(49) spatial mixing across 49 positions (7x7 grid)
-#   Sub-layer 2: Monarch(784) feature mixing on flat vector
+# Two-axis spatial mixing: Monarch(49) over 49 spatial positions,
+# Monarch(784) for feature mixing. Data normalized to [-1,1].
 # Run via: notebooks/03_exp2_photonflow_mnist.ipynb
 
 experiment:
   name: exp2_photonflow_mnist
-  description: "PhotonFlow M2-style two-axis Monarch mixing (MNIST)"
+  description: "PhotonFlow two-axis Monarch mixing (MNIST)"
 
 model:
   type: photonflow
   in_dim: 784          # MNIST: 28x28x1 = 784
-  hidden_dim: 784      # 28^2 (perfect square for MonarchLayer, matches MNIST in_dim)
-  num_blocks: 8        # 8 blocks (paper spec: 6-8)
+  hidden_dim: 784      # 28^2 (perfect square for MonarchLayer)
+  num_blocks: 6        # 6 blocks (paper spec: 6-8)
   use_noise: false     # No photonic noise in this experiment
   sigma_s: 0.0
   sigma_t: 0.0
-  gate_init: 0.1       # Open gates for immediate block contribution
-  seq_dim: 49          # Spatial positions (7^2) — M2 sequence axis
-  feat_dim: 16         # Features per position (4^2) — M2 feature axis
-  monarch_init: random # Small random init (Dao 2022: "initialize randomly")
+  gate_init: 0.0       # Proper adaLN-Zero: gates start at zero (identity-at-init)
+  seq_dim: 49          # Spatial positions (7^2) — two-axis sequence mixing
+  feat_dim: 16         # Features per position (4^2) — two-axis feature mixing
+  monarch_init: identity  # Identity init preserves adaLN-Zero stability
 
 data:
   dataset: mnist
@@ -31,7 +30,7 @@ data:
   num_workers: 2
 
 training:
-  lr: 3.0e-4           # Higher LR for faster convergence
+  lr: 1.0e-4           # Proven LR (DiT uses 1e-4)
   total_steps: 200000  # 200K steps (match baseline for fair comparison)
   checkpoint_every: 5000
   sample_every: 5000

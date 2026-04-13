@@ -89,7 +89,10 @@
       "Bash(python3 -c \"import sys,json; tree=json.load\\(sys.stdin\\).get\\('tree',[]\\); [print\\(x['path']\\) for x in tree if 'example' in x['path'].lower\\(\\) and x['path'].endswith\\('.py'\\)]\")",
       "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); [print\\(x['path']\\) for x in data.get\\('tree', []\\) if x['path'].startswith\\('bert/src/mm/'\\)]\")",
       "Bash(python3 -c \"import sys,json; tree=json.load\\(sys.stdin\\).get\\('tree',[]\\); [print\\(x['path']\\) for x in tree if '2D' in x['path'] and x['path'].endswith\\('.py'\\)]\")",
-      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); [print\\(x['path']\\) for x in data.get\\('tree', []\\) if 'yaml' in x['path'].lower\\(\\) and 'pretrain' in x['path'].lower\\(\\)]\")"
+      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); [print\\(x['path']\\) for x in data.get\\('tree', []\\) if 'yaml' in x['path'].lower\\(\\) and 'pretrain' in x['path'].lower\\(\\)]\")",
+      "WebFetch(domain:docs.pytorch.org)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:deepwiki.com)"
     ]
   },
   "enableAllProjectMcpServers": true,

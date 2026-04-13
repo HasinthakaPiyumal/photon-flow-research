@@ -317,12 +317,21 @@ class Trainer:
         import torchvision.transforms as T
 
         if name == "mnist":
-            transform = T.Compose([T.ToTensor(), T.Lambda(lambda x: x.view(-1))])
+            # Normalize to [-1, 1] to match torchcfm convention (Lipman 2023)
+            transform = T.Compose([
+                T.ToTensor(),
+                T.Normalize((0.5,), (0.5,)),
+                T.Lambda(lambda x: x.view(-1)),
+            ])
             dataset = torchvision.datasets.MNIST(
                 root=root, train=True, download=True, transform=transform,
             )
         elif name == "cifar10":
-            transform = T.Compose([T.ToTensor(), T.Lambda(lambda x: x.view(-1))])
+            transform = T.Compose([
+                T.ToTensor(),
+                T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                T.Lambda(lambda x: x.view(-1)),
+            ])
             dataset = torchvision.datasets.CIFAR10(
                 root=root, train=True, download=True, transform=transform,
             )
@@ -464,7 +473,8 @@ class Trainer:
             device=self.device,
         )
 
-        samples_viz = samples.clamp(0, 1)
+        # Map from [-1,1] back to [0,1] for visualization
+        samples_viz = (samples / 2 + 0.5).clamp(0, 1)
 
         # Save grid image
         if in_dim == 784:

@@ -286,22 +286,17 @@ class PhotonFlowBlock(nn.Module):
             self.noise_l = None
             self.noise_r = None
 
-        # --- Sub-layer 2: Photonic GLU (Gated Linear Unit, photonic FFN) ---
-        # Inspired by M2's GLU MLP (Fu et al. NeurIPS 2023):
-        #   M2 does: Linear_up -> split -> GELU(gate) * value -> Linear_down
-        # Photonic GLU maps this to MZI-native ops:
-        #   Monarch_gate -> Absorber (gate signal via graphene SA)
-        #   Monarch_value                (value signal via MZI mesh)
-        #   -> element-wise multiply     (coherent interference)
-        #   -> Monarch_out               (output mixing via MZI mesh)
-        #
-        # Element-wise multiply of two optical signals = coherent beam
-        # combining, physically realizable via directional couplers.
+        # --- Sub-layer 2: Feature mixing (sequential Monarch chain, photonic FFN) ---
+        # MonarchL2 -> Absorber2 -> MonarchM2 -> Absorber3 -> MonarchR2
+        # With identity init, this chain starts as identity and gradually
+        # learns feature transformations. Deeper than standard 2-layer MLP
+        # to compensate for no expansion ratio.
         self.norm2 = DivisivePowerNorm(num_features=dim)
-        self.monarch_gate = MonarchLayer(dim, init=monarch_init)
-        self.absorber_gate = SaturableAbsorber()
-        self.monarch_value = MonarchLayer(dim, init=monarch_init)
-        self.monarch_out = MonarchLayer(dim, init=monarch_init)
+        self.monarch_l2 = MonarchLayer(dim, init=monarch_init)
+        self.absorber2 = SaturableAbsorber()
+        self.monarch_m2 = MonarchLayer(dim, init=monarch_init)
+        self.absorber3 = SaturableAbsorber()
+        self.monarch_r2 = MonarchLayer(dim, init=monarch_init)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -341,15 +336,13 @@ class PhotonFlowBlock(nn.Module):
         h = self.absorber1(h)
         x = x + g1 * h
 
-        # --- Sub-layer 2: Photonic GLU ---
-        # gate = Absorber(Monarch_gate(h))  -- selective attenuation
-        # value = Monarch_value(h)          -- content signal
-        # output = Monarch_out(gate * value) -- gated mixing
+        # --- Sub-layer 2: Feature mixing (sequential chain) ---
         h = (1 + s2) * self.norm2(x) + sh2
-        h_gate = self.absorber_gate(self.monarch_gate(h))   # gate signal
-        h_val = self.monarch_value(h)                        # value signal
-        h = h_gate * h_val                                   # photonic GLU
-        h = self.monarch_out(h)                              # output mixing
+        h = self.monarch_l2(h)
+        h = self.absorber2(h)
+        h = self.monarch_m2(h)
+        h = self.absorber3(h)
+        h = self.monarch_r2(h)
         x = x + g2 * h
 
         return x
@@ -434,11 +427,12 @@ class PhotonFlowModel(nn.Module):
         self.input_proj = nn.Linear(in_dim, hidden_dim)
         self.output_proj = nn.Linear(hidden_dim, in_dim)
 
-        # Small-init output projection for gradient flow from step 0.
-        # DiT uses zero-init, but PhotonFlow's gated Monarch layers need
-        # gradient signal through output_proj to start learning. std is small
-        # enough that initial v_theta ≈ 0 (std ≈ 0.02/sqrt(dim) ≈ 7e-4).
-        nn.init.normal_(self.output_proj.weight, std=0.02 / math.sqrt(hidden_dim))
+        # Zero-init output projection (DiT pattern, Peebles 2023).
+        # Research confirms zero-init is THE most critical factor in adaLN-Zero
+        # ("Unveiling the Secret of AdaLN-Zero", 2024). Gradients still flow
+        # through output_proj weights because dL/dW = h^T * dL/dv where h is
+        # non-zero (from input_proj) and dL/dv is non-zero (MSE vs target).
+        nn.init.zeros_(self.output_proj.weight)
         nn.init.zeros_(self.output_proj.bias)
 
         # --- Time embedding pipeline (electronics-side) ---
@@ -467,8 +461,16 @@ class PhotonFlowModel(nn.Module):
             for _ in range(num_blocks)
         ])
 
-        # --- Final norm before output projection (like DiT) ---
+        # --- Final layer: norm + adaLN + output projection (DiT FinalLayer) ---
+        # DiT applies a final 2-vector adaLN (shift+scale from time embedding)
+        # before the output projection. This enables time-dependent output scaling.
         self.final_norm = DivisivePowerNorm(num_features=hidden_dim)
+        self.final_adaLN = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(time_dim, 2 * hidden_dim),
+        )
+        nn.init.zeros_(self.final_adaLN[-1].weight)
+        nn.init.zeros_(self.final_adaLN[-1].bias)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Predict the flow field v_theta(x_t, t) = (x_1 - x_0).
@@ -490,8 +492,10 @@ class PhotonFlowModel(nn.Module):
         for block in self.blocks:
             x = block(x, t_emb)
 
-        # Final norm + output projection (photonics -> electronics interface)
+        # Final layer: norm + adaLN conditioning + output projection
         x = self.final_norm(x)
+        shift, scale = self.final_adaLN(t_emb).chunk(2, dim=-1)
+        x = (1 + scale) * x + shift
         return self.output_proj(x)
 
     def extra_repr(self) -> str:
@@ -590,13 +594,12 @@ if __name__ == "__main__":
     assert max_diff7 < 1e-5, (
         f"Block with gates=0 should be identity, got diff={max_diff7:.2e}"
     )
-    # Verify Photonic GLU sub-layer 2 exists
-    assert hasattr(block, 'monarch_gate'), "Missing GLU (monarch_gate)"
-    assert hasattr(block, 'monarch_value'), "Missing GLU (monarch_value)"
-    assert hasattr(block, 'absorber_gate'), "Missing GLU (absorber_gate)"
-    assert hasattr(block, 'monarch_out'), "Missing GLU (monarch_out)"
+    # Verify deeper sub-layer 2 exists
+    assert hasattr(block, 'monarch_l2'), "Missing (monarch_l2)"
+    assert hasattr(block, 'monarch_m2'), "Missing (monarch_m2)"
+    assert hasattr(block, 'monarch_r2'), "Missing (monarch_r2)"
     print(
-        f"  [PASS] Test 7 - PhotonFlowBlock(256): Photonic GLU, "
+        f"  [PASS] Test 7 - PhotonFlowBlock(256): sequential chain, "
         f"gates=0 -> identity (diff={max_diff7:.2e})"
     )
 
@@ -621,9 +624,9 @@ if __name__ == "__main__":
     assert out8.shape == (4, 784), f"Model output shape: {out8.shape}"
     assert not torch.isnan(out8).any(), "NaN in model output"
     assert not torch.isinf(out8).any(), "Inf in model output"
-    # With small-init output_proj + zero gates: v_theta ≈ 0 (small, not exact zero)
+    # With zero output_proj + zero gates: v_theta = 0 at initialization
     max_out8 = out8.abs().max().item()
-    assert max_out8 < 0.5, f"Init output should be small (small-init output_proj), got {max_out8}"
+    assert max_out8 < 1e-5, f"Init output should be ~0 (zero output_proj), got {max_out8}"
     # Gradient check — output_proj gets gradient with small-init
     model.train()
     out8_train = model(x8, t8)
@@ -635,7 +638,7 @@ if __name__ == "__main__":
     n_params = model.count_parameters()
     print(
         f"  [PASS] Test 8 - PhotonFlowModel(784,784,6): (4,784) -> (4,784), "
-        f"v_theta~=0 at init (max={max_out8:.4f}), {n_params:,} params"
+        f"v_theta=0 at init (max={max_out8:.2e}), {n_params:,} params"
     )
 
     # --- Test 9: Noise toggle -- deterministic in eval, stochastic in train ---
