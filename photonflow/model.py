@@ -303,13 +303,19 @@ class PhotonFlowBlock(nn.Module):
             self.monarch_r = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
         self.absorber1 = SaturableAbsorber()
 
-        # --- Photonic noise injection (sub-layer 1 only, training only) ---
+        # --- Photonic noise injection (both sub-layers, training only) ---
+        # Real hardware: every MZI mesh output has shot noise + thermal crosstalk.
+        # Both sub-layers must be noise-regularized for faithful simulation.
         if use_noise:
             self.noise_l = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
             self.noise_r = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
+            self.noise_l2 = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
+            self.noise_r2 = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
         else:
             self.noise_l = None
             self.noise_r = None
+            self.noise_l2 = None
+            self.noise_r2 = None
 
         # --- Sub-layer 2: "MLP" (Monarch-Absorber-Monarch, photonic FFN) ---
         # Mirrors standard MLP: Linear -> Activation -> Linear
@@ -360,8 +366,12 @@ class PhotonFlowBlock(nn.Module):
         # --- Sub-layer 2: "MLP" (nonlinear feature transform) ---
         h = (1 + s2) * self.norm2(x) + sh2
         h = self.monarch_l2(h)
+        if self.noise_l2 is not None:
+            h = self.noise_l2(h)
         h = self.absorber2(h)
         h = self.monarch_r2(h)
+        if self.noise_r2 is not None:
+            h = self.noise_r2(h)
         x = self.residual_scale * x + g2 * h
 
         return x

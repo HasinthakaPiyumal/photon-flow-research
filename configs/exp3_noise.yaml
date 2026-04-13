@@ -33,18 +33,18 @@ data:
   num_workers: 2
 
 training:
-  lr: 1.0e-4
+  lr: 3.0e-4           # Match exp2 LR — isolate noise as only variable
   total_steps: 200000
   checkpoint_every: 5000
   sample_every: 5000
   sample_steps: 20
   seed: 42
-  time_sampling: curriculum
+  time_sampling: uniform
   logit_normal_mean: 0.0
   logit_normal_std: 1.0
   curriculum_transition_frac: 0.6
-  direction_loss_weight: 0.5
-  loss_weight_gamma: 5.0
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
   lr_schedule: cosine
   warmup_steps: 2000
 

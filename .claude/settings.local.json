@@ -115,7 +115,9 @@
       "WebFetch(domain:e3s-center.berkeley.edu)",
       "WebFetch(domain:www.researchgate.net)",
       "Bash(pdftotext \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Deep learning with coherent nanophotonic circuits - 2017 \\(1\\).pdf\" /tmp/shen2017.txt)",
-      "Bash(python3)"
+      "Bash(python3)",
+      "Bash(.venv/Scripts/python photonflow/model.py)",
+      "Bash(.venv/Scripts/python -m photonflow.model)"
     ]
   },
   "enableAllProjectMcpServers": true,
