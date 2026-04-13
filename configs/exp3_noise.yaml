@@ -16,7 +16,7 @@ experiment:
 model:
   type: photonflow
   in_dim: 784
-  hidden_dim: 784
+  hidden_dim: 1024     # 32^2 — 1.3x expansion, more Monarch capacity
   num_blocks: 8
   use_noise: true
   sigma_s: 0.02

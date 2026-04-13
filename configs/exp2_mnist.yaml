@@ -20,7 +20,9 @@ experiment:
 model:
   type: photonflow
   in_dim: 784          # MNIST: 28x28x1 = 784
-  hidden_dim: 784      # 28^2 — no bottleneck, matches input dim
+  hidden_dim: 1024     # 32^2 — gives 1.3x expansion (784->1024 inside blocks)
+                       # Monarch(1024) with m=32 has 50% more params than Monarch(784)
+                       # Mirrors transformer FFN expansion (d -> 4d -> d) at smaller scale
   num_blocks: 8        # Paper spec: 6-8 blocks, more depth for expressivity
   use_noise: false
   sigma_s: 0.0
