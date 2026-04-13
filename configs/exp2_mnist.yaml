@@ -20,9 +20,10 @@ experiment:
 model:
   type: photonflow
   in_dim: 784          # MNIST: 28x28x1 = 784
-  hidden_dim: 1024     # 32^2 — gives 1.3x expansion (784->1024 inside blocks)
-                       # Monarch(1024) with m=32 has 50% more params than Monarch(784)
-                       # Mirrors transformer FFN expansion (d -> 4d -> d) at smaller scale
+  hidden_dim: 1600     # 40^2 — gives 2x expansion (784->1600 inside blocks)
+                       # Baseline uses 4x MLP expansion (256->1024->256).
+                       # 2x expansion with Monarch(1600, m=40) closes this gap.
+                       # Monarch share per block: 29.4% (up from 12.9% at dim=784)
   num_blocks: 8        # Paper spec: 6-8 blocks, more depth for expressivity
   use_noise: false
   sigma_s: 0.0
