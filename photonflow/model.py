@@ -236,9 +236,17 @@ class PhotonFlowBlock(nn.Module):
         seq_dim: int = None,
         feat_dim: int = None,
         monarch_init: str = "identity",
+        residual_scale: float = 1.0,
+        adaln_init_std: float = 0.0,
     ) -> None:
         super().__init__()
         self.dim = dim
+        # Depth-decayed residual (Wang et al. "Residual Connections Harm
+        # Generative Representation Learning," ICLR 2025):
+        # y = alpha_d * x + f(x) where alpha_d decreases with depth.
+        # Suppresses shallow-layer echoes, forcing deeper blocks to learn
+        # abstract features. alpha=1.0 = standard residual (backward compat).
+        self.residual_scale = residual_scale
 
         # --- Two-axis mixing (M2-style, Dao et al. NeurIPS 2023) ---
         # If seq_dim and feat_dim are set, sub-layer 1 applies Monarch(seq_dim)
@@ -252,12 +260,18 @@ class PhotonFlowBlock(nn.Module):
             self.seq_dim = seq_dim
             self.feat_dim = feat_dim
 
-        # --- adaLN-Zero: 6 per-dim vectors (DiT Figure 3, page 4199) ---
+        # --- adaLN conditioning: 6 per-dim vectors (DiT Figure 3, page 4199) ---
+        # adaLN-Zero (Peebles 2023): zero-init so blocks start as identity.
+        # adaLN-Gaussian ("Unveiling the Secret of AdaLN-Zero," OpenReview 2024):
+        # small Gaussian init (std=0.02) slightly outperforms zero-init (~2% FID).
         self.adaLN_proj = nn.Sequential(
             nn.SiLU(),
             nn.Linear(time_dim, 6 * dim),
         )
-        nn.init.zeros_(self.adaLN_proj[-1].weight)
+        if adaln_init_std > 0:
+            nn.init.normal_(self.adaLN_proj[-1].weight, std=adaln_init_std)
+        else:
+            nn.init.zeros_(self.adaLN_proj[-1].weight)
         nn.init.zeros_(self.adaLN_proj[-1].bias)
 
         if gate_init > 0:
@@ -330,14 +344,14 @@ class PhotonFlowBlock(nn.Module):
             if self.noise_r is not None:
                 h = self.noise_r(h)
         h = self.absorber1(h)
-        x = x + g1 * h
+        x = self.residual_scale * x + g1 * h
 
         # --- Sub-layer 2: "MLP" (nonlinear feature transform) ---
         h = (1 + s2) * self.norm2(x) + sh2
         h = self.monarch_l2(h)
         h = self.absorber2(h)
         h = self.monarch_r2(h)
-        x = x + g2 * h
+        x = self.residual_scale * x + g2 * h
 
         return x
 
@@ -404,6 +418,8 @@ class PhotonFlowModel(nn.Module):
         seq_dim: int = None,
         feat_dim: int = None,
         monarch_init: str = "identity",
+        depth_decay_residual: bool = False,
+        adaln_init_std: float = 0.0,
     ) -> None:
         super().__init__()
         # Validate hidden_dim is a perfect square
@@ -440,6 +456,8 @@ class PhotonFlowModel(nn.Module):
         )
 
         # --- Photonic blocks ---
+        # Depth-decayed residual (Wang et al. ICLR 2025): scale decreases
+        # linearly from 1.0 (block 0) to 1/N (last block).
         self.blocks = nn.ModuleList([
             PhotonFlowBlock(
                 dim=hidden_dim,
@@ -451,8 +469,12 @@ class PhotonFlowModel(nn.Module):
                 seq_dim=seq_dim,
                 feat_dim=feat_dim,
                 monarch_init=monarch_init,
+                residual_scale=(
+                    1.0 - i / num_blocks if depth_decay_residual else 1.0
+                ),
+                adaln_init_std=adaln_init_std,
             )
-            for _ in range(num_blocks)
+            for i in range(num_blocks)
         ])
 
         # --- Final layer: norm + adaLN + output projection (DiT FinalLayer) ---

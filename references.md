@@ -47,3 +47,23 @@ The Stable Diffusion 3 paper. Introduces logit-normal timestep sampling for rect
 ## [11] T. Karras et al., "Analyzing and improving the training dynamics of diffusion models," *Proc. CVPR*, 2024. arXiv:2312.02696.
 
 Systematic analysis of training dynamics for diffusion/flow models. Demonstrates that EMA (Exponential Moving Average) of model weights with decay=0.9999 produces substantially better generation quality than raw training weights. PhotonFlow uses EMA for all sampling and evaluation.
+
+## [12] H. Yao et al., "FasterDiT: Towards faster diffusion transformers training without architecture modification," *Proc. NeurIPS*, 2024. arXiv:2410.10356.
+
+Introduces velocity direction supervision: adding a cosine similarity loss term alongside MSE to enforce correct flow direction, not just magnitude. Combined loss: MSE + λ(1 - cos_sim). Achieves 7x training speedup on ImageNet DiT while matching FID. PhotonFlow uses λ=0.5.
+
+## [13] X. Wang et al., "Residual connections harm generative representation learning," *Proc. ICLR*, 2025. arXiv:2404.10947.
+
+Shows that standard residual connections (y = x + f(x)) cause shallow-layer echoes that harm generative models. Proposes depth-decayed residuals: y = α_d·x + f(x) where α_d decreases with depth. PhotonFlow uses linear decay from 1.0 (first block) to 1/N (last block).
+
+## [14] "Curriculum sampling: A two-phase curriculum for efficient training of flow matching," *arXiv preprint*, 2026. arXiv:2603.12517.
+
+Proposes two-phase timestep curriculum: logit-normal sampling for structure learning (phase 1), switching to uniform for boundary refinement (phase 2). Achieves 16% relative FID improvement and 33% faster convergence over static sampling. PhotonFlow transitions at 60% of training.
+
+## [15] "Time dependent loss reweighting for flow matching and diffusion models is theoretically justified," *arXiv preprint*, 2025. arXiv:2511.16599.
+
+Provides theoretical justification for time-dependent loss weighting. Weights per-sample loss by w(t) = max(1, γ/(1-t+ε)) to emphasize hard timesteps near t=1. PhotonFlow uses γ=5.0.
+
+## [16] "Unveiling the secret of AdaLN-Zero in diffusion transformer," *OpenReview*, 2024.
+
+Analyzes adaLN-Zero initialization and finds that small Gaussian init (std=0.02) slightly outperforms pure zero-init (~2% FID improvement). Zero-init remains the most important component but the small perturbation improves early training dynamics. PhotonFlow uses std=0.02.

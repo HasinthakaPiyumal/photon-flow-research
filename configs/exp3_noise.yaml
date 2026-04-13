@@ -21,6 +21,8 @@ model:
   use_noise: true
   sigma_s: 0.02
   sigma_t: 0.01
+  depth_decay_residual: true
+  adaln_init_std: 0.02
 
 data:
   dataset: mnist
@@ -35,11 +37,12 @@ training:
   sample_every: 5000
   sample_steps: 20
   seed: 42
-  # Logit-normal timestep sampling (Esser et al. 2024, SD3)
-  time_sampling: logit_normal
+  time_sampling: curriculum
   logit_normal_mean: 0.0
   logit_normal_std: 1.0
-  # Cosine LR with warmup
+  curriculum_transition_frac: 0.6
+  direction_loss_weight: 0.5
+  loss_weight_gamma: 5.0
   lr_schedule: cosine
   warmup_steps: 2000
 

@@ -148,16 +148,43 @@ class CFMLoss(nn.Module):
 
         π_ln(t; m, s) = 1/(s√(2π)) · 1/(t(1-t)) · exp(-(logit(t) - m)²/(2s²))
 
+    Velocity direction loss (Yao et al. "FasterDiT," NeurIPS 2024):
+        Adds cosine similarity between predicted and target velocity directions.
+        Combined loss: MSE + lambda * (1 - cos_sim). Forces the model to predict
+        correct flow direction, not just magnitude. Reported 7x training speedup.
+
+    Curriculum timestep sampling ("Curriculum Sampling," arXiv 2603.12517, 2026):
+        Phase 1 (early training): logit-normal for structure learning.
+        Phase 2 (later training): uniform to refine trajectory boundaries.
+        Resolves the performance ceiling of static logit-normal sampling.
+        16% relative FID improvement, 33% faster convergence.
+
+    Time-dependent loss weighting ("Time dependent loss reweighting for flow
+    matching," arXiv 2511.16599, 2025):
+        Weights per-sample loss by w(t) = max(1, gamma/(1-t+eps)).
+        Emphasizes hard timesteps (t near 1) where prediction is difficult.
+        Theoretically justified as optimal importance weighting.
+
     Args:
         sigma_min (float): Minimum std for the OT path (Lipman Eq. 20).
             Default 0.0 (standard linear interpolation).
         time_sampling (str): Timestep sampling strategy. One of:
-            "uniform"    -- t ~ U[0,1] (Lipman 2023, original)
+            "uniform"      -- t ~ U[0,1] (Lipman 2023, original)
             "logit_normal" -- t = sigmoid(N(m, s)) (Esser et al. 2024, SD3)
+            "curriculum"   -- logit-normal early, uniform late (arXiv 2026)
         logit_normal_mean (float): Location parameter m for logit-normal.
             Default 0.0 (centers mass at t=0.5).
         logit_normal_std (float): Scale parameter s for logit-normal.
             Default 1.0 (SD3 recommended: rf/lognorm(0.00, 1.00)).
+        curriculum_transition_frac (float): Fraction of training at which
+            curriculum sampling switches from logit-normal to uniform.
+            Default 0.6 (switch at 60% of training).
+        direction_loss_weight (float): Weight for velocity direction (cosine
+            similarity) loss term. 0.0 = disabled. Default 0.0.
+            Recommended: 0.5 (FasterDiT, Yao et al. 2024).
+        loss_weight_gamma (float): Gamma for time-dependent loss weighting.
+            w(t) = max(1, gamma/(1-t+eps)). 0.0 = disabled. Default 0.0.
+            Recommended: 5.0 (arXiv 2511.16599, 2025).
     """
 
     def __init__(
@@ -166,26 +193,36 @@ class CFMLoss(nn.Module):
         time_sampling: str = "uniform",
         logit_normal_mean: float = 0.0,
         logit_normal_std: float = 1.0,
+        curriculum_transition_frac: float = 0.6,
+        direction_loss_weight: float = 0.0,
+        loss_weight_gamma: float = 0.0,
     ) -> None:
         super().__init__()
         self.sigma_min = sigma_min
         self.time_sampling = time_sampling
         self.logit_normal_mean = logit_normal_mean
         self.logit_normal_std = logit_normal_std
+        self.curriculum_transition_frac = curriculum_transition_frac
+        self.direction_loss_weight = direction_loss_weight
+        self.loss_weight_gamma = loss_weight_gamma
 
     def forward(
         self,
         model: nn.Module,
         x1: torch.Tensor,
+        step: int = 0,
+        total_steps: int = 1,
     ) -> torch.Tensor:
         """Compute CFM loss for a batch of data.
 
         Args:
-            model: v_theta network. Must accept (x, t) and return (B, D).
-            x1:    (B, D) batch of real data samples.
+            model:       v_theta network. Must accept (x, t) and return (B, D).
+            x1:          (B, D) batch of real data samples.
+            step:        Current training step (for curriculum sampling).
+            total_steps: Total training steps (for curriculum sampling).
 
         Returns:
-            Scalar MSE loss.
+            Scalar loss (MSE + optional direction loss, with optional weighting).
 
         Raises:
             ValueError: if x1 is not 2D or batch is empty.
@@ -207,12 +244,16 @@ class CFMLoss(nn.Module):
         x0 = torch.randn_like(x1)
 
         # --- Sample time t ---
-        if self.time_sampling == "logit_normal":
+        # Curriculum (arXiv 2603.12517): logit-normal early, uniform late
+        use_logit_normal = (
+            self.time_sampling == "logit_normal"
+            or (self.time_sampling == "curriculum"
+                and step < total_steps * self.curriculum_transition_frac)
+        )
+        if use_logit_normal:
             # Esser et al. 2024 (SD3): t = sigmoid(N(m, s))
-            # Biases toward intermediate timesteps where prediction is hardest
             u = self.logit_normal_mean + self.logit_normal_std * torch.randn(B, device=device)
             t = torch.sigmoid(u)
-            # Clamp to avoid numerical issues at exact 0 or 1
             t = t.clamp(1e-5, 1.0 - 1e-5)
         else:
             t = torch.rand(B, device=device)
@@ -240,7 +281,25 @@ class CFMLoss(nn.Module):
                 f"{target.shape}. Check model in_dim matches data dim."
             )
 
-        return F.mse_loss(v_pred, target)
+        # --- Loss computation ---
+        if self.loss_weight_gamma > 0:
+            # Time-dependent weighting (arXiv 2511.16599):
+            # w(t) = max(1, gamma/(1-t+eps)) — emphasize hard timesteps
+            per_sample_mse = ((v_pred - target) ** 2).mean(dim=-1)  # (B,)
+            w = torch.clamp(
+                self.loss_weight_gamma / (1.0 - t + 1e-5), min=1.0
+            )  # (B,)
+            loss = (w * per_sample_mse).mean()
+        else:
+            loss = F.mse_loss(v_pred, target)
+
+        # Velocity direction loss (FasterDiT, Yao et al. 2024):
+        # Penalizes wrong flow direction via cosine similarity
+        if self.direction_loss_weight > 0:
+            cos_sim = F.cosine_similarity(v_pred, target, dim=-1).mean()
+            loss = loss + self.direction_loss_weight * (1.0 - cos_sim)
+
+        return loss
 
     def extra_repr(self) -> str:
         return f"sigma_min={self.sigma_min}"
@@ -349,16 +408,16 @@ class Trainer:
         # Gradient clipping (prevents exploding gradients)
         self.grad_clip = config.get("training", {}).get("grad_clip", 1.0)
 
-        # Loss (with optional logit-normal timestep sampling)
+        # Loss (with all training optimizations)
         tcfg = config.get("training", {})
-        time_sampling = tcfg.get("time_sampling", "uniform")
-        logit_normal_mean = tcfg.get("logit_normal_mean", 0.0)
-        logit_normal_std = tcfg.get("logit_normal_std", 1.0)
         self.criterion = CFMLoss(
             sigma_min=0.0,
-            time_sampling=time_sampling,
-            logit_normal_mean=logit_normal_mean,
-            logit_normal_std=logit_normal_std,
+            time_sampling=tcfg.get("time_sampling", "uniform"),
+            logit_normal_mean=tcfg.get("logit_normal_mean", 0.0),
+            logit_normal_std=tcfg.get("logit_normal_std", 1.0),
+            curriculum_transition_frac=tcfg.get("curriculum_transition_frac", 0.6),
+            direction_loss_weight=tcfg.get("direction_loss_weight", 0.0),
+            loss_weight_gamma=tcfg.get("loss_weight_gamma", 0.0),
         )
 
         # EMA (Karras et al. 2024: use EMA weights for sampling)
@@ -421,6 +480,8 @@ class Trainer:
             seq_dim=mcfg.get("seq_dim", None),
             feat_dim=mcfg.get("feat_dim", None),
             monarch_init=mcfg.get("monarch_init", "identity"),
+            depth_decay_residual=mcfg.get("depth_decay_residual", False),
+            adaln_init_std=mcfg.get("adaln_init_std", 0.0),
         )
 
     # ---- QAT unwrap helper (fix #2: no import in non-QAT paths) ----
@@ -500,7 +561,9 @@ class Trainer:
                 x1 = x1.view(x1.shape[0], -1)
 
             # Forward + backward
-            loss = self.criterion(self.model, x1)
+            loss = self.criterion(
+                self.model, x1, step=step, total_steps=self.total_steps
+            )
 
             self.optimizer.zero_grad()
             loss.backward()
