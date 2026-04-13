@@ -24,6 +24,7 @@ model:
   gate_init: 0.1
   depth_decay_residual: true
   adaln_init_std: 0.02
+  num_monarch_factors: 2
 
 data:
   dataset: mnist

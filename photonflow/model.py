@@ -123,7 +123,8 @@ class MonarchLayer(nn.Module):
                      defines M = PLP^TR with no additive term.
     """
 
-    def __init__(self, dim: int, bias: bool = True, init: str = "identity") -> None:
+    def __init__(self, dim: int, bias: bool = True, init: str = "identity",
+                 num_factors: int = 1) -> None:
         super().__init__()
         m = math.isqrt(dim)
         if m * m != dim:
@@ -133,29 +134,39 @@ class MonarchLayer(nn.Module):
             )
         self.dim = dim
         self.m = m
+        self.num_factors = num_factors
 
-        self.L = nn.Parameter(torch.empty(m, m, m))
-        self.R = nn.Parameter(torch.empty(m, m, m))
+        # Stacked Monarch factors (Dao 2022, Section 3.2):
+        # M = M_k * ... * M_2 * M_1, where each M_i = P L_i P^T R_i.
+        # The product is NOT closed — M1*M2 is strictly more expressive.
+        # Maps to cascading multiple MZI mesh stages on photonic hardware.
+        self.Ls = nn.ParameterList([
+            nn.Parameter(torch.empty(m, m, m)) for _ in range(num_factors)
+        ])
+        self.Rs = nn.ParameterList([
+            nn.Parameter(torch.empty(m, m, m)) for _ in range(num_factors)
+        ])
         self.bias = nn.Parameter(torch.zeros(dim)) if bias else None
 
         self._init_mode = init
         self._init_weights()
 
     def _init_weights(self) -> None:
-        if self._init_mode == "random":
-            # Small random init (Dao 2022 Sec 4: "initialize randomly").
-            # Gives every parameter nonzero gradient from step 0.
-            for i in range(self.m):
-                nn.init.xavier_normal_(self.L.data[i], gain=0.1)
-                nn.init.xavier_normal_(self.R.data[i], gain=0.1)
-        else:
-            # Identity init: M = PIP^TI = PP^T = I.
-            for i in range(self.m):
-                nn.init.eye_(self.L.data[i])
-                nn.init.eye_(self.R.data[i])
+        for f in range(self.num_factors):
+            if self._init_mode == "random":
+                for i in range(self.m):
+                    nn.init.xavier_normal_(self.Ls[f].data[i], gain=0.1)
+                    nn.init.xavier_normal_(self.Rs[f].data[i], gain=0.1)
+            else:
+                # Identity init: each factor = I, so product = I.
+                for i in range(self.m):
+                    nn.init.eye_(self.Ls[f].data[i])
+                    nn.init.eye_(self.Rs[f].data[i])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply Monarch transform y = PLP^TR x.
+        """Apply stacked Monarch transform y = M_k ... M_2 M_1 x.
+
+        Each factor: M_i x = P L_i P^T R_i x.
 
         Args:
             x: (B, dim) input tensor.
@@ -165,12 +176,13 @@ class MonarchLayer(nn.Module):
         """
         B = x.shape[0]
 
-        x = x.reshape(B, self.m, self.m)                         # (B, m, m)
-        x = torch.einsum("bki,kij->bkj", x, self.R)              # (B, m, m)
-        x = x.transpose(1, 2).contiguous()                        # (B, m, m)
-        x = torch.einsum("bki,kij->bkj", x, self.L)              # (B, m, m)
-        x = x.transpose(1, 2).contiguous()                        # (B, m, m)
-        x = x.reshape(B, self.dim)
+        for f in range(self.num_factors):
+            x = x.reshape(B, self.m, self.m)
+            x = torch.einsum("bki,kij->bkj", x, self.Rs[f])
+            x = x.transpose(1, 2).contiguous()
+            x = torch.einsum("bki,kij->bkj", x, self.Ls[f])
+            x = x.transpose(1, 2).contiguous()
+            x = x.reshape(B, self.dim)
 
         if self.bias is not None:
             x = x + self.bias
@@ -179,8 +191,9 @@ class MonarchLayer(nn.Module):
 
     def extra_repr(self) -> str:
         return (
-            f"dim={self.dim}, m={self.m}, "
-            f"params={2 * self.m ** 3} (vs {self.dim ** 2} dense), "
+            f"dim={self.dim}, m={self.m}, num_factors={self.num_factors}, "
+            f"params={2 * self.num_factors * self.m ** 3} "
+            f"(vs {self.dim ** 2} dense), "
             f"bias={self.bias is not None}"
         )
 
@@ -238,6 +251,7 @@ class PhotonFlowBlock(nn.Module):
         monarch_init: str = "identity",
         residual_scale: float = 1.0,
         adaln_init_std: float = 0.0,
+        num_monarch_factors: int = 1,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -282,14 +296,11 @@ class PhotonFlowBlock(nn.Module):
         # --- Sub-layer 1: Spatial mixing ---
         self.norm1 = DivisivePowerNorm(num_features=dim)
         if self.use_two_axis:
-            # M2-style: Monarch(seq_dim) mixes across positions per feature
-            # channel. For MNIST: Monarch(49) over 49 spatial positions.
-            self.monarch_spatial_l = MonarchLayer(seq_dim, init=monarch_init)
-            self.monarch_spatial_r = MonarchLayer(seq_dim, init=monarch_init)
+            self.monarch_spatial_l = MonarchLayer(seq_dim, init=monarch_init, num_factors=num_monarch_factors)
+            self.monarch_spatial_r = MonarchLayer(seq_dim, init=monarch_init, num_factors=num_monarch_factors)
         else:
-            # Flat Monarch(dim) pair (original design)
-            self.monarch_l = MonarchLayer(dim, init=monarch_init)
-            self.monarch_r = MonarchLayer(dim, init=monarch_init)
+            self.monarch_l = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
+            self.monarch_r = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
         self.absorber1 = SaturableAbsorber()
 
         # --- Photonic noise injection (sub-layer 1 only, training only) ---
@@ -304,9 +315,9 @@ class PhotonFlowBlock(nn.Module):
         # Mirrors standard MLP: Linear -> Activation -> Linear
         # MonarchL2 -> Absorber2 -> MonarchR2
         self.norm2 = DivisivePowerNorm(num_features=dim)
-        self.monarch_l2 = MonarchLayer(dim, init=monarch_init)
+        self.monarch_l2 = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
         self.absorber2 = SaturableAbsorber()
-        self.monarch_r2 = MonarchLayer(dim, init=monarch_init)
+        self.monarch_r2 = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -420,6 +431,7 @@ class PhotonFlowModel(nn.Module):
         monarch_init: str = "identity",
         depth_decay_residual: bool = False,
         adaln_init_std: float = 0.0,
+        num_monarch_factors: int = 1,
     ) -> None:
         super().__init__()
         # Validate hidden_dim is a perfect square
@@ -477,6 +489,7 @@ class PhotonFlowModel(nn.Module):
                     1.0 - i / num_blocks if depth_decay_residual else 1.0
                 ),
                 adaln_init_std=adaln_init_std,
+                num_monarch_factors=num_monarch_factors,
             )
             for i in range(num_blocks)
         ])

@@ -482,6 +482,7 @@ class Trainer:
             monarch_init=mcfg.get("monarch_init", "identity"),
             depth_decay_residual=mcfg.get("depth_decay_residual", False),
             adaln_init_std=mcfg.get("adaln_init_std", 0.0),
+            num_monarch_factors=mcfg.get("num_monarch_factors", 1),
         )
 
     # ---- QAT unwrap helper (fix #2: no import in non-QAT paths) ----

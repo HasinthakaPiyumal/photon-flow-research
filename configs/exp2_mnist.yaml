@@ -31,6 +31,8 @@ model:
   depth_decay_residual: true
   # adaLN Gaussian init ("Unveiling AdaLN-Zero," OpenReview 2024)
   adaln_init_std: 0.02
+  # Stacked Monarch factors M=M1*M2 (Dao 2022 Sec 3.2: product is more expressive)
+  num_monarch_factors: 2
 
 data:
   dataset: mnist
