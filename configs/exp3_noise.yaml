@@ -21,7 +21,9 @@ model:
   use_noise: true
   sigma_s: 0.02
   sigma_t: 0.01
-  noise_warmup_steps: 5000    # Ramp noise from 0→full over first 5K steps
+  noise_warmup_steps: 10000   # Ramp noise from 0→full over first 10K steps
+  noise_warmup_schedule: cosine  # cosine ramp (smoother than linear at boundary)
+  noise_augment_k: 2             # Average gradient over K noise realizations per step
   gate_init: 0.1
   depth_decay_residual: true
   adaln_init_std: 0.02
@@ -44,6 +46,7 @@ training:
   logit_normal_mean: 0.0
   logit_normal_std: 1.0
   curriculum_transition_frac: 0.6
+  grad_clip: 1.0              # Max gradient norm (stabilizes noisy training)
   direction_loss_weight: 0.0
   loss_weight_gamma: 0.0
   lr_schedule: cosine
