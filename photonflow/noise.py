@@ -162,6 +162,18 @@ class PhotonicNoise(nn.Module):
     # Forward
     # ------------------------------------------------------------------
 
+    def set_noise_scale(self, scale: float) -> None:
+        """Set noise scaling factor (0.0 = no noise, 1.0 = full noise).
+
+        Used for noise warmup: gradually increase noise from 0 to full
+        sigma over the first N training steps. This lets the model learn
+        basic structure before hardening against hardware noise.
+
+        Args:
+            scale: float in [0, 1]. Multiplied with sigma_s and sigma_t.
+        """
+        self._noise_scale = max(0.0, min(1.0, scale))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Inject photonic noise (training only).
 
@@ -175,6 +187,11 @@ class PhotonicNoise(nn.Module):
         """
         # Eval mode or disabled: pass through unchanged.
         if not self.training or not self.enabled:
+            return x
+
+        # Noise warmup scaling (default 1.0 = full noise)
+        scale = getattr(self, '_noise_scale', 1.0)
+        if scale == 0.0:
             return x
 
         # ── Shot noise ──────────────────────────────────────────────
@@ -212,7 +229,7 @@ class PhotonicNoise(nn.Module):
 
         thermal = self.sigma_t * corr.reshape(orig_shape)
 
-        return x + shot + thermal
+        return x + scale * (shot + thermal)
 
     # ------------------------------------------------------------------
 

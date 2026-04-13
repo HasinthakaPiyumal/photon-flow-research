@@ -547,6 +547,17 @@ class PhotonFlowModel(nn.Module):
             f"num_blocks={self.num_blocks}"
         )
 
+    def set_noise_scale(self, scale: float) -> None:
+        """Set noise warmup scale on all PhotonicNoise modules.
+
+        Args:
+            scale: 0.0 = no noise, 1.0 = full noise.
+                   Call this each step with scale = min(1, step / warmup_steps).
+        """
+        for module in self.modules():
+            if hasattr(module, 'set_noise_scale') and module is not self:
+                module.set_noise_scale(scale)
+
     def count_parameters(self) -> int:
         """Return total number of trainable parameters."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)

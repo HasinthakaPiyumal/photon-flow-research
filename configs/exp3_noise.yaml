@@ -21,6 +21,7 @@ model:
   use_noise: true
   sigma_s: 0.02
   sigma_t: 0.01
+  noise_warmup_steps: 5000    # Ramp noise from 0→full over first 5K steps
   gate_init: 0.1
   depth_decay_residual: true
   adaln_init_std: 0.02
