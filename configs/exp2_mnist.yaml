@@ -12,7 +12,7 @@ model:
   type: photonflow
   in_dim: 784          # MNIST: 28x28x1 = 784
   hidden_dim: 784      # 28^2 — no bottleneck, matches input dim
-  num_blocks: 4        # Original working config
+  num_blocks: 8        # Paper spec: 6-8 blocks, more depth for expressivity
   use_noise: false
   sigma_s: 0.0
   sigma_t: 0.0
