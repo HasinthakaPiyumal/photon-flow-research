@@ -81,7 +81,15 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:par.nsf.gov)",
-      "WebFetch(domain:api.github.com)"
+      "WebFetch(domain:api.github.com)",
+      "Bash(curl -sL https://raw.githubusercontent.com/HazyResearch/m2/main/bert/src/mm/blockdiag_multiply.py)",
+      "Bash(curl -sL https://raw.githubusercontent.com/HazyResearch/m2/main/bert/src/mm/blockdiag_butterfly_multiply.py)",
+      "Bash(curl:*)",
+      "Bash(python3 -c \"import sys,json; [print\\(x['name']\\) for x in json.load\\(sys.stdin\\)]\")",
+      "Bash(python3 -c \"import sys,json; tree=json.load\\(sys.stdin\\).get\\('tree',[]\\); [print\\(x['path']\\) for x in tree if 'example' in x['path'].lower\\(\\) and x['path'].endswith\\('.py'\\)]\")",
+      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); [print\\(x['path']\\) for x in data.get\\('tree', []\\) if x['path'].startswith\\('bert/src/mm/'\\)]\")",
+      "Bash(python3 -c \"import sys,json; tree=json.load\\(sys.stdin\\).get\\('tree',[]\\); [print\\(x['path']\\) for x in tree if '2D' in x['path'] and x['path'].endswith\\('.py'\\)]\")",
+      "Bash(python3 -c \"import sys, json; data = json.load\\(sys.stdin\\); [print\\(x['path']\\) for x in data.get\\('tree', []\\) if 'yaml' in x['path'].lower\\(\\) and 'pretrain' in x['path'].lower\\(\\)]\")"
     ]
   },
   "enableAllProjectMcpServers": true,

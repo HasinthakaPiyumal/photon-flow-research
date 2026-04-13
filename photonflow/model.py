@@ -286,14 +286,22 @@ class PhotonFlowBlock(nn.Module):
             self.noise_l = None
             self.noise_r = None
 
-        # --- Sub-layer 2: Feature mixing (flat Monarch(dim), photonic FFN) ---
-        # MonarchL2 -> Absorber2 -> MonarchM2 -> Absorber3 -> MonarchR2
+        # --- Sub-layer 2: Photonic GLU (Gated Linear Unit, photonic FFN) ---
+        # Inspired by M2's GLU MLP (Fu et al. NeurIPS 2023):
+        #   M2 does: Linear_up -> split -> GELU(gate) * value -> Linear_down
+        # Photonic GLU maps this to MZI-native ops:
+        #   Monarch_gate -> Absorber (gate signal via graphene SA)
+        #   Monarch_value                (value signal via MZI mesh)
+        #   -> element-wise multiply     (coherent interference)
+        #   -> Monarch_out               (output mixing via MZI mesh)
+        #
+        # Element-wise multiply of two optical signals = coherent beam
+        # combining, physically realizable via directional couplers.
         self.norm2 = DivisivePowerNorm(num_features=dim)
-        self.monarch_l2 = MonarchLayer(dim, init=monarch_init)
-        self.absorber2 = SaturableAbsorber()
-        self.monarch_m2 = MonarchLayer(dim, init=monarch_init)
-        self.absorber3 = SaturableAbsorber()
-        self.monarch_r2 = MonarchLayer(dim, init=monarch_init)
+        self.monarch_gate = MonarchLayer(dim, init=monarch_init)
+        self.absorber_gate = SaturableAbsorber()
+        self.monarch_value = MonarchLayer(dim, init=monarch_init)
+        self.monarch_out = MonarchLayer(dim, init=monarch_init)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -333,13 +341,15 @@ class PhotonFlowBlock(nn.Module):
         h = self.absorber1(h)
         x = x + g1 * h
 
-        # --- Sub-layer 2: "MLP" (deeper nonlinear feature transform) ---
+        # --- Sub-layer 2: Photonic GLU ---
+        # gate = Absorber(Monarch_gate(h))  -- selective attenuation
+        # value = Monarch_value(h)          -- content signal
+        # output = Monarch_out(gate * value) -- gated mixing
         h = (1 + s2) * self.norm2(x) + sh2
-        h = self.monarch_l2(h)
-        h = self.absorber2(h)
-        h = self.monarch_m2(h)
-        h = self.absorber3(h)
-        h = self.monarch_r2(h)
+        h_gate = self.absorber_gate(self.monarch_gate(h))   # gate signal
+        h_val = self.monarch_value(h)                        # value signal
+        h = h_gate * h_val                                   # photonic GLU
+        h = self.monarch_out(h)                              # output mixing
         x = x + g2 * h
 
         return x
@@ -580,13 +590,13 @@ if __name__ == "__main__":
     assert max_diff7 < 1e-5, (
         f"Block with gates=0 should be identity, got diff={max_diff7:.2e}"
     )
-    # Verify deeper sub-layer 2 exists (3 Monarch + 2 Absorber)
-    assert hasattr(block, 'monarch_l2'), "Missing MLP sub-layer (monarch_l2)"
-    assert hasattr(block, 'monarch_m2'), "Missing MLP sub-layer (monarch_m2)"
-    assert hasattr(block, 'absorber2'), "Missing MLP sub-layer (absorber2)"
-    assert hasattr(block, 'absorber3'), "Missing MLP sub-layer (absorber3)"
+    # Verify Photonic GLU sub-layer 2 exists
+    assert hasattr(block, 'monarch_gate'), "Missing GLU (monarch_gate)"
+    assert hasattr(block, 'monarch_value'), "Missing GLU (monarch_value)"
+    assert hasattr(block, 'absorber_gate'), "Missing GLU (absorber_gate)"
+    assert hasattr(block, 'monarch_out'), "Missing GLU (monarch_out)"
     print(
-        f"  [PASS] Test 7 - PhotonFlowBlock(256): deeper sub-layer 2, "
+        f"  [PASS] Test 7 - PhotonFlowBlock(256): Photonic GLU, "
         f"gates=0 -> identity (diff={max_diff7:.2e})"
     )
 
