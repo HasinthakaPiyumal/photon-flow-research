@@ -114,7 +114,8 @@
       "WebFetch(domain:www.nature.com)",
       "WebFetch(domain:e3s-center.berkeley.edu)",
       "WebFetch(domain:www.researchgate.net)",
-      "Bash(pdftotext \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Deep learning with coherent nanophotonic circuits - 2017 \\(1\\).pdf\" /tmp/shen2017.txt)"
+      "Bash(pdftotext \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Deep learning with coherent nanophotonic circuits - 2017 \\(1\\).pdf\" /tmp/shen2017.txt)",
+      "Bash(python3)"
     ]
   },
   "enableAllProjectMcpServers": true,
