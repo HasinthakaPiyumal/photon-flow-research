@@ -28,7 +28,7 @@ data:
 
 training:
   lr: 1.0e-4           # Adam learning rate
-  total_steps: 100000  # 100K steps (Paper Table I Exp 2)
+  total_steps: 200000  # 200K steps (match baseline for fair comparison)
   checkpoint_every: 5000
   sample_every: 5000
   sample_steps: 20     # Euler ODE steps for generation

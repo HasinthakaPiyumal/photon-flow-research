@@ -220,9 +220,11 @@ class PhotonFlowBlock(nn.Module):
           -> MonarchR (second Monarch layer)
           -> [PhotonicNoise]             # training only, optional
           -> SaturableAbsorber           # tanh(alpha*x)/alpha, alpha=0.8
-          -> DivisivePowerNorm           # x / (||x||_2 + eps)
-          -> + time_proj(t_emb)          # add projected time embedding
-          -> residual: x_in + alpha * out  # zero-init alpha (DiT trick)
+          -> DivisivePowerNorm           # x / (||x||_2 + eps) * gain + bias
+          -> residual: x_in + alpha * photonic_out + time_proj(t_emb)
+        Note: time_proj is OUTSIDE the alpha gate so that time conditioning
+        contributes from step 0 (alpha starts near zero). This separates the
+        photonic path (gated by alpha) from electronic time conditioning.
 
     Hardware mapping:
         MonarchL, R   <->  MZI mesh array (two columns of beamsplitters)
@@ -230,10 +232,12 @@ class PhotonFlowBlock(nn.Module):
         PowerNorm     <->  Microring resonator + photodetector feedback
         PhotonicNoise <->  Shot noise + thermal crosstalk (training simulation)
 
-    Zero-init residual scaling (inspired by Peebles & Xie 2023, DiT):
-        self.alpha is a learned scalar nn.Parameter initialized to 0.
-        Initially: output = x_in + 0 * block(x_in) = x_in (identity).
-        Gradient signals teach alpha to grow, enabling stable deep training.
+    Near-zero residual scaling (inspired by Peebles & Xie 2023, DiT):
+        self.alpha is a learned scalar nn.Parameter initialized to 1e-6.
+        Initially: output ≈ x_in + eps * block(x_in) + time_proj(t_emb).
+        The near-zero (not exact-zero) initialization avoids the gradient
+        starvation problem where alpha=0 blocks all gradient flow through
+        the photonic path, preventing the model from learning.
 
         Simplification vs DiT paper (Figure 3, page 4199):
             DiT uses per-dimension alpha VECTORS regressed from timestep+class
@@ -242,7 +246,8 @@ class PhotonFlowBlock(nn.Module):
             PhotonFlow uses a single time-INDEPENDENT scalar alpha per block.
             Rationale: (1) a scalar is more hardware-friendly (one attenuation
             factor for the entire waveguide array), and (2) time-conditioning
-            is already handled by the additive time_proj(t_emb) path.
+            is handled by the SEPARATE additive time_proj(t_emb) path (outside
+            the alpha gate, so it contributes from step 0).
 
     Args:
         dim      (int):   Feature dimension (must be perfect square for MonarchLayer).
@@ -277,15 +282,17 @@ class PhotonFlowBlock(nn.Module):
 
         # Photonic activation + normalization
         self.absorber = SaturableAbsorber()          # tanh(0.8x)/0.8
-        self.norm = DivisivePowerNorm()              # x / (||x||_2 + 1e-6)
+        self.norm = DivisivePowerNorm(num_features=dim)  # x / (||x||_2 + eps) * gain + bias
 
         # Per-block time embedding projection (electronics-side)
         self.time_proj = nn.Linear(time_dim, dim)
 
-        # Zero-initialized residual scale (inspired by DiT, Peebles & Xie 2023).
-        # Simplified to a single scalar (vs DiT's per-dimension, timestep-conditioned
-        # vectors). See class docstring for full rationale.
-        self.alpha = nn.Parameter(torch.zeros(1))
+        # Near-zero residual scale (inspired by DiT, Peebles & Xie 2023).
+        # Initialized to 1e-6 (not exact zero) to avoid gradient starvation:
+        # with alpha=0 + zero output_proj, blocks receive zero gradient and
+        # never learn. Near-zero init breaks this trap while keeping the
+        # stable-initialization benefit. See class docstring for full rationale.
+        self.alpha = nn.Parameter(torch.full((1,), 1e-6))
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -311,11 +318,12 @@ class PhotonFlowBlock(nn.Module):
         x = self.absorber(x)
         x = self.norm(x)
 
-        # --- Add time embedding (electronics-side conditioning) ---
-        x = x + self.time_proj(t_emb)
-
-        # --- Zero-init residual skip (DiT alpha trick) ---
-        return residual + self.alpha * x
+        # --- Near-zero residual skip (DiT alpha trick) ---
+        # Time embedding is added OUTSIDE the alpha gate so that time
+        # conditioning contributes from step 0 (even when alpha ≈ 0).
+        # Physically: photonic path (Monarch→absorber→norm) is gated by
+        # alpha; electronic time conditioning is a separate additive signal.
+        return residual + self.alpha * x + self.time_proj(t_emb)
 
     def extra_repr(self) -> str:
         use_noise = self.noise_l is not None
@@ -387,12 +395,15 @@ class PhotonFlowModel(nn.Module):
         self.input_proj = nn.Linear(in_dim, hidden_dim)
         self.output_proj = nn.Linear(hidden_dim, in_dim)
 
-        # Zero-initialize output projection (Peebles & Xie 2023, DiT):
-        # Combined with alpha=0 in all blocks, this makes the model initially
-        # predict v_theta = 0 (trivial vector field), a clean starting point
-        # for flow matching. Without this, v_theta starts as a random linear
-        # map, giving unnecessarily large initial loss.
-        nn.init.zeros_(self.output_proj.weight)
+        # Small-random output projection initialization.
+        # DiT (Peebles & Xie 2023) uses zero-init here, relying on per-dimension
+        # time-conditioned gates (adaLN-Zero) to gradually open gradient paths.
+        # PhotonFlow uses a simpler scalar alpha, which cannot overcome a zero
+        # output_proj — gradients to the photonic blocks are exactly zero when
+        # Wout = 0, causing complete gradient starvation. Small Xavier init
+        # (gain=0.02) gives blocks non-zero gradients from step 0 while keeping
+        # initial predictions small. The bias stays zero.
+        nn.init.xavier_uniform_(self.output_proj.weight, gain=0.02)
         nn.init.zeros_(self.output_proj.bias)
 
         # --- Time embedding pipeline (electronics-side) ---
@@ -530,12 +541,17 @@ if __name__ == "__main__":
     out7 = block(x7, t7)
     assert out7.shape == (4, 256), f"Block output shape: {out7.shape}"
     assert not torch.isnan(out7).any(), "NaN in block output"
-    # With alpha=0 init, output should equal input (identity residual)
-    max_diff7 = (out7 - x7).abs().max().item()
-    assert max_diff7 < 1e-4, f"Block with alpha=0 should be near-identity, got diff={max_diff7}"
+    # With alpha~0, output ~ residual + time_proj(t_emb)
+    # The photonic path contributes alpha*norm(absorber(x)) ~ 1e-6 * unit_vec ~ 0
+    # time_proj(t_emb) is the dominant non-residual contribution
+    expected7 = x7 + block.time_proj(t7)
+    max_diff7 = (out7 - expected7).abs().max().item()
+    assert max_diff7 < 1e-3, (
+        f"Block with alpha~0 should be ~ residual + time_proj, got diff={max_diff7}"
+    )
     print(
         f"  [PASS] Test 7 - PhotonFlowBlock: (4,256) -> (4,256), "
-        f"alpha=0 near-identity (diff={max_diff7:.2e})"
+        f"alpha~0: output ~ residual + time_proj (diff={max_diff7:.2e})"
     )
 
     # --- Test 8: PhotonFlowModel full forward (MNIST config) ---
@@ -547,6 +563,11 @@ if __name__ == "__main__":
     assert out8.shape == (4, 784), f"Model output shape: {out8.shape}"
     assert not torch.isnan(out8).any(), "NaN in model output"
     assert not torch.isinf(out8).any(), "Inf in model output"
+    # Initial output should be small (output_proj has gain=0.02, time_proj
+    # contributions are projected through small output_proj). Not zero though —
+    # time_proj is active from step 0.
+    max_out8 = out8.abs().max().item()
+    assert max_out8 < 10.0, f"Initial output unexpectedly large: {max_out8}"
     # Gradient check
     model.train()
     out8_train = model(x8, t8)
@@ -556,7 +577,7 @@ if __name__ == "__main__":
     n_params = model.count_parameters()
     print(
         f"  [PASS] Test 8 - PhotonFlowModel MNIST: (4,784) -> (4,784), "
-        f"no NaN/Inf, grads flow, {n_params:,} params"
+        f"no NaN/Inf, init max|out|={max_out8:.4f}, grads flow, {n_params:,} params"
     )
 
     # --- Test 9: Noise toggle — deterministic in eval, stochastic in train ---
@@ -569,14 +590,12 @@ if __name__ == "__main__":
     out9b = model_noise(x9, t9)
     assert torch.equal(out9a, out9b), "Eval mode should be deterministic"
     # Train mode: two forward passes should differ (noise is stochastic).
-    # Set alpha=1 so noise propagates to output (alpha=0 zeros out the block path).
-    # Also set output_proj to non-zero (it's zero-initialized, which would zero out
-    # all noise regardless of alpha).
+    # With the fixed init, alpha is already 1e-6 (not zero) and output_proj
+    # is already non-zero (Xavier gain=0.02). But alpha=1e-6 makes the noise
+    # contribution very small. Set alpha=1 to make noise clearly visible.
     model_noise.train()
     for blk in model_noise.blocks:
         blk.alpha.data.fill_(1.0)
-    nn.init.normal_(model_noise.output_proj.weight)
-    nn.init.ones_(model_noise.output_proj.bias)
     out9c = model_noise(x9, t9)
     out9d = model_noise(x9, t9)
     assert not torch.equal(out9c, out9d), "Train mode with noise should be stochastic"

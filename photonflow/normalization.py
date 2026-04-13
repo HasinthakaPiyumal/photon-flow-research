@@ -74,6 +74,19 @@ class DivisivePowerNorm(nn.Module):
     For input shape (batch, dim) this normalizes each sample's feature
     vector independently. For (batch, seq, dim) it normalizes each token.
 
+    Optional learnable affine parameters (gain and bias):
+        When num_features is provided, the layer learns per-channel gain
+        and bias applied AFTER the optical normalization step. Physically,
+        these represent electronic post-processing at the optical-electronic
+        boundary — the microring resonator divides by the norm (optical),
+        then per-channel gain/bias are applied electronically. This is
+        analogous to LayerNorm's gamma/beta but without mean centering.
+
+        The gain parameter compensates for magnitude compression: for a
+        256-dim vector, ||x||_2 ≈ 16, so the raw norm output has ~1/16
+        the magnitude of the input. Learnable gain lets the model restore
+        appropriate scale.
+
     Properties:
         ||output||_2 ≈ 1.0  (unit-norm output, up to eps rounding)
         x = 0 → output = 0  (zero input is safe — eps prevents division by zero)
@@ -93,14 +106,35 @@ class DivisivePowerNorm(nn.Module):
                      Default: 1e-6.
         dim (int): Dimension along which to compute the L2 norm.
                    Default: -1 (last dimension, the feature dimension).
+        num_features (int or None): If provided, adds learnable gain and
+                     bias parameters of this size. These are applied after
+                     the divisive normalization as electronic post-processing.
+                     Default: None (no learnable affine).
+        learnable (bool): Whether to create learnable affine parameters when
+                     num_features is provided. Default: True.
     """
 
-    def __init__(self, eps: float = 1e-6, dim: int = -1) -> None:
+    def __init__(
+        self,
+        eps: float = 1e-6,
+        dim: int = -1,
+        num_features: int = None,
+        learnable: bool = True,
+    ) -> None:
         super().__init__()
         if eps <= 0:
             raise ValueError(f"eps must be positive, got {eps}")
         self.eps = eps
         self.dim = dim
+        self.num_features = num_features
+
+        # Learnable affine parameters (electronic post-processing)
+        if num_features is not None and learnable:
+            self.gain = nn.Parameter(torch.ones(num_features))
+            self.bias = nn.Parameter(torch.zeros(num_features))
+        else:
+            self.gain = None
+            self.bias = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply divisive power normalization.
@@ -111,17 +145,26 @@ class DivisivePowerNorm(nn.Module):
 
         Returns:
             Tensor of the same shape as x. Each slice along self.dim has
-            L2 norm approximately equal to 1.0.
+            L2 norm approximately equal to 1.0 (before affine transform).
         """
         # Compute L2 norm along the feature dimension.
         # keepdim=True so we can broadcast-divide without reshaping.
         norm = torch.norm(x, p=2, dim=self.dim, keepdim=True)
 
         # Divide by (norm + eps). The eps prevents NaN when x = 0.
-        return x / (norm + self.eps)
+        out = x / (norm + self.eps)
+
+        # Optional learnable affine (electronic post-processing step)
+        if self.gain is not None:
+            out = out * self.gain + self.bias
+
+        return out
 
     def extra_repr(self) -> str:
-        return f"eps={self.eps}, dim={self.dim}"
+        s = f"eps={self.eps}, dim={self.dim}"
+        if self.num_features is not None:
+            s += f", num_features={self.num_features}, affine=True"
+        return s
 
 
 # ---------------------------------------------------------------------------
@@ -192,11 +235,47 @@ if __name__ == "__main__":
     )
     print(f"  [PASS] Test 5 — direction preserved: min cosine similarity = {cos_sim.min().item():.6f}")
 
+    # --- Test 6: learnable affine (num_features) ---
+    norm_aff = DivisivePowerNorm(eps=1e-6, num_features=64)
+    x6 = torch.randn(8, 64)
+    out6 = norm_aff(x6)
+    assert out6.shape == x6.shape, f"Affine shape: {out6.shape}"
+    # With gain=1, bias=0 (init), output should be same as non-affine
+    out6_plain = DivisivePowerNorm(eps=1e-6)(x6)
+    assert torch.allclose(out6, out6_plain, atol=1e-5), (
+        "Affine with gain=1, bias=0 should match plain DivisivePowerNorm"
+    )
+    # Modify gain and bias → output should change
+    norm_aff.gain.data.fill_(2.0)
+    norm_aff.bias.data.fill_(0.5)
+    out6_mod = norm_aff(x6)
+    expected = 2.0 * out6_plain + 0.5
+    assert torch.allclose(out6_mod, expected, atol=1e-5), (
+        "Affine: gain=2, bias=0.5 should give 2*norm(x)+0.5"
+    )
+    # Gradients flow through gain and bias
+    x6g = torch.randn(4, 64, requires_grad=True)
+    norm_aff2 = DivisivePowerNorm(num_features=64)
+    out6g = norm_aff2(x6g)
+    out6g.sum().backward()
+    assert x6g.grad is not None, "Affine: no gradient for input"
+    assert norm_aff2.gain.grad is not None, "Affine: no gradient for gain"
+    assert norm_aff2.bias.grad is not None, "Affine: no gradient for bias"
+    print(f"  [PASS] Test 6 — learnable affine: gain/bias, gradients flow")
+
+    # --- Test 7: no affine when num_features is None ---
+    norm_no_aff = DivisivePowerNorm(eps=1e-6)
+    assert norm_no_aff.gain is None, "gain should be None without num_features"
+    assert norm_no_aff.bias is None, "bias should be None without num_features"
+    print(f"  [PASS] Test 7 — no affine: gain=None, bias=None (backward compatible)")
+
     print()
     print("All tests passed.")
-    print(f"  {norm_fn}")
+    print(f"  Plain:  {DivisivePowerNorm()}")
+    print(f"  Affine: {DivisivePowerNorm(num_features=256)}")
     print()
     print("Physical interpretation:")
     print("  Photodetector measures total optical power  => L2 norm of field amplitudes")
     print("  Microring resonator feedback attenuates     => divides all elements by the norm")
-    print("  Result: unit-norm output vector, fully in the optical domain")
+    print("  Optional gain/bias (electronic boundary)    => per-channel scale and shift")
+    print("  Result: normalized output, optionally rescaled at optical-electronic interface")
