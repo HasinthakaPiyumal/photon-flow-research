@@ -21,6 +21,7 @@ model:
   use_noise: true
   sigma_s: 0.02
   sigma_t: 0.01
+  gate_init: 0.1
   depth_decay_residual: true
   adaln_init_std: 0.02
 

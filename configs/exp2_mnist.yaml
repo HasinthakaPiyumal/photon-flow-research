@@ -25,6 +25,8 @@ model:
   use_noise: false
   sigma_s: 0.0
   sigma_t: 0.0
+  # Gate init > 0: blocks contribute from step 0 (not gated to zero)
+  gate_init: 0.1
   # Depth-decayed residuals (Wang et al. ICLR 2025)
   depth_decay_residual: true
   # adaLN Gaussian init ("Unveiling AdaLN-Zero," OpenReview 2024)
