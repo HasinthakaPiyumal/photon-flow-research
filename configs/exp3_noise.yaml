@@ -16,15 +16,16 @@ experiment:
 model:
   type: photonflow
   in_dim: 784
-  hidden_dim: 1600     # 40^2 — 2x expansion, matches baseline MLP expansion
+  hidden_dim: 256      # 16^2 — compact, efficient
   num_blocks: 8
+  time_dim: 64
   use_noise: true
   sigma_s: 0.02
   sigma_t: 0.01
   gate_init: 0.1
   depth_decay_residual: true
   adaln_init_std: 0.02
-  num_monarch_factors: 2
+  num_monarch_factors: 4
 
 data:
   dataset: mnist
