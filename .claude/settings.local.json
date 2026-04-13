@@ -52,11 +52,30 @@
       "Bash(python -c ':*)",
       "Bash(python update_nb.py)",
       "Bash(del update_nb.py)",
-      "Bash(python _fix_nb.py)"
+      "Bash(python _fix_nb.py)",
+      "Bash(pdftoppm -v)",
+      "Bash(python:*)",
+      "Bash(mkdir -p /tmp/butterfly_flow)",
+      "Bash(pdftoppm -png -r 200 \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/ButterflyFlow - Meng et al 2022.pdf\" /tmp/butterfly_flow/page)",
+      "Bash(pdftoppm -png -r 200 \"D:/hackathons/photon-flow-research/paper/Photonflow__Paper_Draft.pdf\" /tmp/photonflow_paper)",
+      "Bash(ls -la /tmp/photonflow_paper*.png)",
+      "Bash(mkdir -p /tmp/cfm_pages)",
+      "Bash(pdftoppm -png -r 200 \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/FLOW MATCHING FOR GENERATIVE MODELING - 2023.pdf\" /tmp/cfm_pages/page)",
+      "Bash(mkdir -p \"D:/hackathons/photon-flow-research/outputs/tmp_paper\")",
+      "Bash(pdftoppm -png -r 200 \"D:/hackathons/photon-flow-research/paper/Photonflow__Paper_Draft.pdf\" \"D:/hackathons/photon-flow-research/outputs/tmp_paper/page\")",
+      "Bash(mkdir -p /tmp/nanophotonic)",
+      "Bash(pdftoppm -png -r 200 \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Deep learning with coherent nanophotonic circuits - 2017 \\(1\\).pdf\" /tmp/nanophotonic/page)",
+      "Bash(mkdir -p /tmp/monarch_pages)",
+      "Bash(pdftoppm -png -r 200 \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Expressive Structured Matrices for Efficient and Accurate Training-2022.pdf\" /tmp/monarch_pages/page)",
+      "Bash(cygpath -w /tmp/butterfly_flow/page-01.png)",
+      "Bash(wslpath -w /tmp/butterfly_flow/page-01.png)",
+      "Bash(mkdir -p /tmp/qat_pages)",
+      "Bash(pdftoppm -png -r 200 \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Quantization and Training - Jacob et al 2018.pdf\" /tmp/qat_pages/page)",
+      "Bash(cygpath:*)"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "kaggle"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

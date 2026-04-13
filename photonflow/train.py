@@ -250,6 +250,23 @@ class Trainer:
         self.sample_every = tcfg.get("sample_every", 5000)
         self.sample_steps = tcfg.get("sample_steps", 20)
 
+        # LR scheduler (optional warmup + cosine decay)
+        warmup_steps = tcfg.get("warmup_steps", 0)
+        lr_schedule = tcfg.get("lr_schedule", "constant")
+        if lr_schedule == "cosine":
+            from torch.optim.lr_scheduler import LambdaLR
+            total = self.total_steps
+
+            def lr_lambda(step):
+                if step < warmup_steps:
+                    return step / max(warmup_steps, 1)
+                progress = (step - warmup_steps) / max(total - warmup_steps, 1)
+                return 0.5 * (1 + math.cos(math.pi * progress))
+
+            self.scheduler = LambdaLR(self.optimizer, lr_lambda)
+        else:
+            self.scheduler = None
+
         # Output dirs
         self.output_dir = config.get("output_dir", "outputs")
         self.ckpt_dir = os.path.join(self.output_dir, "checkpoints")
@@ -273,6 +290,7 @@ class Trainer:
             use_noise=mcfg.get("use_noise", True),
             sigma_s=mcfg.get("sigma_s", 0.02),
             sigma_t=mcfg.get("sigma_t", 0.01),
+            gate_init=mcfg.get("gate_init", 0.0),
         )
 
     # ---- QAT unwrap helper (fix #2: no import in non-QAT paths) ----
@@ -359,6 +377,9 @@ class Trainer:
                 )
 
             self.optimizer.step()
+
+            if self.scheduler is not None:
+                self.scheduler.step()
 
             # Log
             loss_val = loss.item()

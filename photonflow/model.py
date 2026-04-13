@@ -229,6 +229,7 @@ class PhotonFlowBlock(nn.Module):
         use_noise: bool = True,
         sigma_s: float = 0.02,
         sigma_t: float = 0.01,
+        gate_init: float = 0.0,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -244,6 +245,14 @@ class PhotonFlowBlock(nn.Module):
         nn.init.zeros_(self.adaLN_proj[-1].weight)
         nn.init.zeros_(self.adaLN_proj[-1].bias)
 
+        # Optional small positive gate init to eliminate bootstrapping delay.
+        # With gate_init > 0, Monarch layers get gradient from step 1 instead
+        # of waiting hundreds of steps for gates to learn nonzero values.
+        if gate_init > 0:
+            with torch.no_grad():
+                self.adaLN_proj[-1].bias[2 * dim : 3 * dim].fill_(gate_init)  # g1
+                self.adaLN_proj[-1].bias[5 * dim : 6 * dim].fill_(gate_init)  # g2
+
         # --- Sub-layer 1: "Attention" (Monarch pair for spatial mixing) ---
         self.norm1 = DivisivePowerNorm(num_features=dim)
         self.monarch_l = MonarchLayer(dim)
@@ -258,12 +267,14 @@ class PhotonFlowBlock(nn.Module):
             self.noise_l = None
             self.noise_r = None
 
-        # --- Sub-layer 2: "MLP" (Monarch-Absorber-Monarch, photonic FFN) ---
-        # Mirrors standard MLP: Linear -> Activation -> Linear
-        # MonarchL2 -> Absorber2 -> MonarchR2
+        # --- Sub-layer 2: "MLP" (deeper Monarch-Absorber chain, photonic FFN) ---
+        # Deeper than standard MLP to compensate for no expansion ratio:
+        # MonarchL2 -> Absorber2 -> MonarchM2 -> Absorber3 -> MonarchR2
         self.norm2 = DivisivePowerNorm(num_features=dim)
         self.monarch_l2 = MonarchLayer(dim)
         self.absorber2 = SaturableAbsorber()
+        self.monarch_m2 = MonarchLayer(dim)
+        self.absorber3 = SaturableAbsorber()
         self.monarch_r2 = MonarchLayer(dim)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
@@ -290,10 +301,12 @@ class PhotonFlowBlock(nn.Module):
         h = self.absorber1(h)
         x = x + g1 * h
 
-        # --- Sub-layer 2: "MLP" (nonlinear feature transform) ---
+        # --- Sub-layer 2: "MLP" (deeper nonlinear feature transform) ---
         h = (1 + s2) * self.norm2(x) + sh2
         h = self.monarch_l2(h)
-        h = self.absorber2(h)       # activation BETWEEN two linears (like GELU in MLP)
+        h = self.absorber2(h)
+        h = self.monarch_m2(h)
+        h = self.absorber3(h)
         h = self.monarch_r2(h)
         x = x + g2 * h
 
@@ -358,6 +371,7 @@ class PhotonFlowModel(nn.Module):
         use_noise: bool = True,
         sigma_s: float = 0.02,
         sigma_t: float = 0.01,
+        gate_init: float = 0.0,
     ) -> None:
         super().__init__()
         # Validate hidden_dim is a perfect square
@@ -375,11 +389,11 @@ class PhotonFlowModel(nn.Module):
         self.input_proj = nn.Linear(in_dim, hidden_dim)
         self.output_proj = nn.Linear(hidden_dim, in_dim)
 
-        # Zero-init output projection (DiT pattern, Peebles 2023 page 4199).
-        # Combined with zero-init adaLN gates, every block is identity at step 0,
-        # so v_theta = 0 initially. output_proj learns the mean flow first, then
-        # gates gradually open to let Monarch layers contribute corrections.
-        nn.init.zeros_(self.output_proj.weight)
+        # Small-init output projection for gradient flow from step 0.
+        # DiT uses zero-init, but PhotonFlow's gated Monarch layers need
+        # gradient signal through output_proj to start learning. std is small
+        # enough that initial v_theta ≈ 0 (std ≈ 0.02/sqrt(dim) ≈ 7e-4).
+        nn.init.normal_(self.output_proj.weight, std=0.02 / math.sqrt(hidden_dim))
         nn.init.zeros_(self.output_proj.bias)
 
         # --- Time embedding pipeline (electronics-side) ---
@@ -400,6 +414,7 @@ class PhotonFlowModel(nn.Module):
                 use_noise=use_noise,
                 sigma_s=sigma_s,
                 sigma_t=sigma_t,
+                gate_init=gate_init,
             )
             for _ in range(num_blocks)
         ])
@@ -527,12 +542,26 @@ if __name__ == "__main__":
     assert max_diff7 < 1e-5, (
         f"Block with gates=0 should be identity, got diff={max_diff7:.2e}"
     )
-    # Verify 2 sub-layers exist
+    # Verify deeper sub-layer 2 exists (3 Monarch + 2 Absorber)
     assert hasattr(block, 'monarch_l2'), "Missing MLP sub-layer (monarch_l2)"
+    assert hasattr(block, 'monarch_m2'), "Missing MLP sub-layer (monarch_m2)"
     assert hasattr(block, 'absorber2'), "Missing MLP sub-layer (absorber2)"
+    assert hasattr(block, 'absorber3'), "Missing MLP sub-layer (absorber3)"
     print(
-        f"  [PASS] Test 7 - PhotonFlowBlock(256): 2 sub-layers, "
+        f"  [PASS] Test 7 - PhotonFlowBlock(256): deeper sub-layer 2, "
         f"gates=0 -> identity (diff={max_diff7:.2e})"
+    )
+
+    # --- Test 7b: gate_init > 0 gives near-identity (not exact) ---
+    block_gi = PhotonFlowBlock(dim=256, time_dim=256, use_noise=False, gate_init=0.01)
+    block_gi.eval()
+    out7b = block_gi(x7, t7)
+    max_diff7b = (out7b - x7).abs().max().item()
+    assert max_diff7b < 1.0, (
+        f"Block with gate_init=0.01 should be near-identity, got diff={max_diff7b:.2e}"
+    )
+    print(
+        f"  [PASS] Test 7b - gate_init=0.01: near-identity (diff={max_diff7b:.2e})"
     )
 
     # --- Test 8: PhotonFlowModel full forward (MNIST: hidden_dim=784) ---
@@ -544,16 +573,13 @@ if __name__ == "__main__":
     assert out8.shape == (4, 784), f"Model output shape: {out8.shape}"
     assert not torch.isnan(out8).any(), "NaN in model output"
     assert not torch.isinf(out8).any(), "Inf in model output"
-    # With zero output_proj + zero gates: v_theta = 0 at initialization
+    # With small-init output_proj + zero gates: v_theta ≈ 0 (small, not exact zero)
     max_out8 = out8.abs().max().item()
-    assert max_out8 < 1e-5, f"Init output should be ~0 (zero output_proj), got {max_out8}"
-    # Gradient check — output_proj gets gradient even with zero init
-    # because grad = -2 * target * h_final^T (h_final is non-zero from input_proj)
+    assert max_out8 < 0.5, f"Init output should be small (small-init output_proj), got {max_out8}"
+    # Gradient check — output_proj gets gradient with small-init
     model.train()
     out8_train = model(x8, t8)
     out8_train.sum().backward()
-    # With gate=0, Monarch params get zero gradient (expected — gates haven't opened)
-    # But output_proj and adaLN_proj MUST get gradient (bootstrapping)
     assert model.output_proj.weight.grad is not None, "output_proj needs gradient"
     assert model.output_proj.weight.grad.abs().max().item() > 0, "output_proj grad must be non-zero"
     for i, blk in enumerate(model.blocks):
@@ -561,7 +587,7 @@ if __name__ == "__main__":
     n_params = model.count_parameters()
     print(
         f"  [PASS] Test 8 - PhotonFlowModel(784,784,6): (4,784) -> (4,784), "
-        f"v_theta=0 at init, output_proj+adaLN get grad, {n_params:,} params"
+        f"v_theta~=0 at init (max={max_out8:.4f}), {n_params:,} params"
     )
 
     # --- Test 9: Noise toggle -- deterministic in eval, stochastic in train ---
