@@ -2,11 +2,20 @@
 # PhotonFlow (Monarch layers) on MNIST — no noise injection
 # Purpose: Sanity check — "do Monarch layers work for generation?"
 #
+# Training improvements applied:
+#   - Logit-normal timestep sampling (Esser et al. ICML 2024, SD3 paper)
+#     Biases training toward intermediate timesteps where velocity prediction
+#     is hardest. rf/lognorm(0.00, 1.00) outperforms uniform sampling.
+#   - EMA of model weights (Karras et al. CVPR 2024)
+#     EMA weights produce better generation quality than raw training weights.
+#   - Cosine LR schedule with warmup (standard practice)
+#     Prevents early divergence and provides smooth annealing.
+#
 # Run via: notebooks/03_exp2_photonflow_mnist.ipynb
 
 experiment:
   name: exp2_photonflow_mnist
-  description: "PhotonFlow with Monarch layers, no noise (MNIST sanity check)"
+  description: "PhotonFlow with Monarch layers, logit-normal sampling, EMA (MNIST)"
 
 model:
   type: photonflow
@@ -24,12 +33,23 @@ data:
   num_workers: 2
 
 training:
-  lr: 1.0e-4
+  lr: 3.0e-4           # Higher LR for Monarch layers (ButterflyFlow uses 1e-3)
   total_steps: 200000
   checkpoint_every: 5000
   sample_every: 5000
   sample_steps: 20
   seed: 42
+  # Logit-normal timestep sampling (Esser et al. 2024, SD3)
+  time_sampling: logit_normal
+  logit_normal_mean: 0.0
+  logit_normal_std: 1.0
+  # Cosine LR with warmup
+  lr_schedule: cosine
+  warmup_steps: 2000
+
+ema:
+  enabled: true
+  decay: 0.9999
 
 qat:
   enabled: false

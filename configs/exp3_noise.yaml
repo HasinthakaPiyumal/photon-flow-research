@@ -2,17 +2,22 @@
 # PhotonFlow + shot noise + thermal crosstalk on MNIST
 # Purpose: Noise robustness — "does noise-aware training help?"
 #
+# Training improvements (same as exp2):
+#   - Logit-normal timestep sampling (Esser et al. 2024)
+#   - EMA (Karras et al. 2024)
+#   - Cosine LR with warmup
+#
 # Run via: notebooks/04_exp3_noise_regularized.ipynb
 
 experiment:
   name: exp3_noise_regularized
-  description: "PhotonFlow + photonic noise injection (shot + thermal crosstalk)"
+  description: "PhotonFlow + noise + logit-normal + EMA (MNIST)"
 
 model:
   type: photonflow
   in_dim: 784
   hidden_dim: 784
-  num_blocks: 6
+  num_blocks: 8
   use_noise: true
   sigma_s: 0.02
   sigma_t: 0.01
@@ -30,6 +35,17 @@ training:
   sample_every: 5000
   sample_steps: 20
   seed: 42
+  # Logit-normal timestep sampling (Esser et al. 2024, SD3)
+  time_sampling: logit_normal
+  logit_normal_mean: 0.0
+  logit_normal_std: 1.0
+  # Cosine LR with warmup
+  lr_schedule: cosine
+  warmup_steps: 2000
+
+ema:
+  enabled: true
+  decay: 0.9999
 
 qat:
   enabled: false

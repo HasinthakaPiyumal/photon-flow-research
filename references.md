@@ -39,3 +39,11 @@ The primary baseline competitor. Demonstrates an optical GAN for image generatio
 ## [9] B. Jacob et al., "Quantization and training of neural networks for efficient integer-arithmetic-only inference," *Proc. CVPR*, 2018.
 
 Establishes the quantization-aware training (QAT) framework that PhotonFlow adapts for photonic hardware. We apply their approach with 4-bit precision to match the limited resolution of analog MZI phase shifters.
+
+## [10] P. Esser et al., "Scaling rectified flow transformers for high-resolution image synthesis," *Proc. ICML*, 2024. arXiv:2403.03206.
+
+The Stable Diffusion 3 paper. Introduces logit-normal timestep sampling for rectified flow training: instead of t ~ U[0,1], sample t = sigmoid(N(m, s)) with m=0, s=1. This biases training toward intermediate timesteps where velocity prediction is hardest, consistently outperforming uniform sampling. PhotonFlow adopts this as the default timestep sampling strategy.
+
+## [11] T. Karras et al., "Analyzing and improving the training dynamics of diffusion models," *Proc. CVPR*, 2024. arXiv:2312.02696.
+
+Systematic analysis of training dynamics for diffusion/flow models. Demonstrates that EMA (Exponential Moving Average) of model weights with decay=0.9999 produces substantially better generation quality than raw training weights. PhotonFlow uses EMA for all sampling and evaluation.

@@ -31,6 +31,17 @@ References:
     Integer-Arithmetic-Only Inference," CVPR 2018.
     - Section 3, Figure 1.1b: QAT inserts fake-quantize nodes in forward pass
     - STE backward: gradient flows through quantize as identity
+
+    Esser et al., "Scaling Rectified Flow Transformers for High-Resolution
+    Image Synthesis," ICML 2024.
+    - Section 3.1: Logit-normal timestep sampling t = sigmoid(N(m, s))
+    - rf/lognorm(0.00, 1.00) consistently outperforms uniform sampling
+    - Biases training toward perceptually critical intermediate timesteps
+
+    Karras et al., "Analyzing and Improving the Training Dynamics of
+    Diffusion Models," CVPR 2024.
+    - EMA (Exponential Moving Average) of model weights for sampling
+    - Standard practice: decay=0.9999, use EMA weights for evaluation
 """
 
 import math
@@ -45,7 +56,72 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from photonflow.model import PhotonFlowModel
 
-__all__ = ["CFMLoss", "euler_sample", "Trainer"]
+__all__ = ["CFMLoss", "euler_sample", "Trainer", "EMA"]
+
+
+# ---------------------------------------------------------------------------
+# EMA -- Exponential Moving Average (Karras et al. CVPR 2024)
+# ---------------------------------------------------------------------------
+
+class EMA:
+    """Exponential Moving Average of model parameters.
+
+    Maintains a shadow copy of model weights updated as:
+        shadow = decay * shadow + (1 - decay) * param
+
+    Use the shadow weights for evaluation/sampling (they produce better
+    generation quality than raw training weights).
+
+    Karras et al. "Analyzing and Improving the Training Dynamics of
+    Diffusion Models," CVPR 2024: EMA is standard practice for diffusion
+    and flow matching models. Typical decay: 0.9999.
+
+    Args:
+        model (nn.Module): The model to track.
+        decay (float): EMA decay rate. Higher = smoother. Default 0.9999.
+    """
+
+    def __init__(self, model: nn.Module, decay: float = 0.9999) -> None:
+        self.decay = decay
+        self.shadow = {
+            name: param.clone().detach()
+            for name, param in model.named_parameters()
+            if param.requires_grad
+        }
+
+    @torch.no_grad()
+    def update(self, model: nn.Module) -> None:
+        """Update shadow weights from current model weights."""
+        for name, param in model.named_parameters():
+            if param.requires_grad and name in self.shadow:
+                self.shadow[name].mul_(self.decay).add_(
+                    param.data, alpha=1.0 - self.decay
+                )
+
+    def apply(self, model: nn.Module) -> dict:
+        """Replace model weights with EMA shadow weights.
+
+        Returns the original weights so they can be restored.
+        """
+        backup = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad and name in self.shadow:
+                backup[name] = param.data.clone()
+                param.data.copy_(self.shadow[name])
+        return backup
+
+    def restore(self, model: nn.Module, backup: dict) -> None:
+        """Restore original weights from backup."""
+        for name, param in model.named_parameters():
+            if name in backup:
+                param.data.copy_(backup[name])
+
+    def state_dict(self) -> dict:
+        return {"decay": self.decay, "shadow": self.shadow}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.decay = state["decay"]
+        self.shadow = state["shadow"]
 
 
 # ---------------------------------------------------------------------------
@@ -63,14 +139,39 @@ class CFMLoss(nn.Module):
 
     where x0 ~ N(0, I) is noise and x1 is data.
 
+    Logit-normal timestep sampling (Esser et al. "Scaling Rectified Flow
+    Transformers for High-Resolution Image Synthesis," ICML 2024):
+        Instead of t ~ U[0,1], sample u ~ N(m, s) and set t = sigmoid(u).
+        This biases training toward intermediate timesteps (around t=0.5)
+        where the velocity prediction task is hardest. The SD3 paper found
+        that rf/lognorm(0.00, 1.00) consistently outperforms uniform sampling.
+
+        π_ln(t; m, s) = 1/(s√(2π)) · 1/(t(1-t)) · exp(-(logit(t) - m)²/(2s²))
+
     Args:
         sigma_min (float): Minimum std for the OT path (Lipman Eq. 20).
             Default 0.0 (standard linear interpolation).
+        time_sampling (str): Timestep sampling strategy. One of:
+            "uniform"    -- t ~ U[0,1] (Lipman 2023, original)
+            "logit_normal" -- t = sigmoid(N(m, s)) (Esser et al. 2024, SD3)
+        logit_normal_mean (float): Location parameter m for logit-normal.
+            Default 0.0 (centers mass at t=0.5).
+        logit_normal_std (float): Scale parameter s for logit-normal.
+            Default 1.0 (SD3 recommended: rf/lognorm(0.00, 1.00)).
     """
 
-    def __init__(self, sigma_min: float = 0.0) -> None:
+    def __init__(
+        self,
+        sigma_min: float = 0.0,
+        time_sampling: str = "uniform",
+        logit_normal_mean: float = 0.0,
+        logit_normal_std: float = 1.0,
+    ) -> None:
         super().__init__()
         self.sigma_min = sigma_min
+        self.time_sampling = time_sampling
+        self.logit_normal_mean = logit_normal_mean
+        self.logit_normal_std = logit_normal_std
 
     def forward(
         self,
@@ -105,8 +206,16 @@ class CFMLoss(nn.Module):
         # --- Sample noise x0 ~ N(0, I) ---
         x0 = torch.randn_like(x1)
 
-        # --- Sample time t ~ U[0, 1] ---
-        t = torch.rand(B, device=device)
+        # --- Sample time t ---
+        if self.time_sampling == "logit_normal":
+            # Esser et al. 2024 (SD3): t = sigmoid(N(m, s))
+            # Biases toward intermediate timesteps where prediction is hardest
+            u = self.logit_normal_mean + self.logit_normal_std * torch.randn(B, device=device)
+            t = torch.sigmoid(u)
+            # Clamp to avoid numerical issues at exact 0 or 1
+            t = t.clamp(1e-5, 1.0 - 1e-5)
+        else:
+            t = torch.rand(B, device=device)
 
         # --- OT interpolation (Lipman Eq. 22) ---
         t_expand = t[:, None]  # (B, 1) for broadcasting
@@ -240,8 +349,26 @@ class Trainer:
         # Gradient clipping (prevents exploding gradients)
         self.grad_clip = config.get("training", {}).get("grad_clip", 1.0)
 
-        # Loss
-        self.criterion = CFMLoss(sigma_min=0.0)
+        # Loss (with optional logit-normal timestep sampling)
+        tcfg = config.get("training", {})
+        time_sampling = tcfg.get("time_sampling", "uniform")
+        logit_normal_mean = tcfg.get("logit_normal_mean", 0.0)
+        logit_normal_std = tcfg.get("logit_normal_std", 1.0)
+        self.criterion = CFMLoss(
+            sigma_min=0.0,
+            time_sampling=time_sampling,
+            logit_normal_mean=logit_normal_mean,
+            logit_normal_std=logit_normal_std,
+        )
+
+        # EMA (Karras et al. 2024: use EMA weights for sampling)
+        ema_cfg = config.get("ema", {})
+        self.use_ema = ema_cfg.get("enabled", False)
+        if self.use_ema:
+            ema_decay = ema_cfg.get("decay", 0.9999)
+            self.ema = EMA(self.model, decay=ema_decay)
+        else:
+            self.ema = None
 
         # Training params
         tcfg = config.get("training", {})
@@ -389,6 +516,10 @@ class Trainer:
             if self.scheduler is not None:
                 self.scheduler.step()
 
+            # EMA update (Karras et al. 2024)
+            if self.ema is not None:
+                self.ema.update(self.model)
+
             # Log
             loss_val = loss.item()
 
@@ -433,16 +564,16 @@ class Trainer:
         path = os.path.join(
             self.ckpt_dir, f"checkpoint_step{self.global_step}.pth"
         )
-        torch.save(
-            {
-                "step": self.global_step,
-                "model_state_dict": model_to_save.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "losses": self.losses,
-                "config": self.config,
-            },
-            path,
-        )
+        save_dict = {
+            "step": self.global_step,
+            "model_state_dict": model_to_save.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "losses": self.losses,
+            "config": self.config,
+        }
+        if self.ema is not None:
+            save_dict["ema_state_dict"] = self.ema.state_dict()
+        torch.save(save_dict, path)
         return path
 
     def load_checkpoint(self, path: str) -> None:
@@ -453,14 +584,24 @@ class Trainer:
         self.optimizer.load_state_dict(state["optimizer_state_dict"])
         self.losses = state.get("losses", [])
         self.global_step = state.get("step", 0)
+        if self.ema is not None and "ema_state_dict" in state:
+            self.ema.load_state_dict(state["ema_state_dict"])
 
     # ---- Sample generation (fix #2 + #9) ----
 
     @torch.no_grad()
     def generate_samples(self, n_samples: int = 64) -> torch.Tensor:
-        """Generate and save a grid of samples using Euler ODE."""
+        """Generate and save a grid of samples using Euler ODE.
+
+        Uses EMA weights for sampling if EMA is enabled (Karras et al. 2024).
+        """
         model_for_sample = self._unwrap_model()
         in_dim = model_for_sample.in_dim
+
+        # Use EMA weights for generation (produces better quality)
+        backup = None
+        if self.ema is not None:
+            backup = self.ema.apply(model_for_sample)
 
         samples = euler_sample(
             model_for_sample,
@@ -468,6 +609,10 @@ class Trainer:
             num_steps=self.sample_steps,
             device=self.device,
         )
+
+        # Restore training weights
+        if backup is not None:
+            self.ema.restore(model_for_sample, backup)
 
         samples_viz = samples.clamp(0, 1)
 
