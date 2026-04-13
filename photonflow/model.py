@@ -286,16 +286,12 @@ class PhotonFlowBlock(nn.Module):
             self.noise_l = None
             self.noise_r = None
 
-        # --- Sub-layer 2: Feature mixing (sequential Monarch chain, photonic FFN) ---
-        # MonarchL2 -> Absorber2 -> MonarchM2 -> Absorber3 -> MonarchR2
-        # With identity init, this chain starts as identity and gradually
-        # learns feature transformations. Deeper than standard 2-layer MLP
-        # to compensate for no expansion ratio.
+        # --- Sub-layer 2: "MLP" (Monarch-Absorber-Monarch, photonic FFN) ---
+        # Mirrors standard MLP: Linear -> Activation -> Linear
+        # MonarchL2 -> Absorber2 -> MonarchR2
         self.norm2 = DivisivePowerNorm(num_features=dim)
         self.monarch_l2 = MonarchLayer(dim, init=monarch_init)
         self.absorber2 = SaturableAbsorber()
-        self.monarch_m2 = MonarchLayer(dim, init=monarch_init)
-        self.absorber3 = SaturableAbsorber()
         self.monarch_r2 = MonarchLayer(dim, init=monarch_init)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
@@ -336,12 +332,10 @@ class PhotonFlowBlock(nn.Module):
         h = self.absorber1(h)
         x = x + g1 * h
 
-        # --- Sub-layer 2: Feature mixing (sequential chain) ---
+        # --- Sub-layer 2: "MLP" (nonlinear feature transform) ---
         h = (1 + s2) * self.norm2(x) + sh2
         h = self.monarch_l2(h)
         h = self.absorber2(h)
-        h = self.monarch_m2(h)
-        h = self.absorber3(h)
         h = self.monarch_r2(h)
         x = x + g2 * h
 
@@ -594,12 +588,12 @@ if __name__ == "__main__":
     assert max_diff7 < 1e-5, (
         f"Block with gates=0 should be identity, got diff={max_diff7:.2e}"
     )
-    # Verify deeper sub-layer 2 exists
+    # Verify sub-layer 2 exists
     assert hasattr(block, 'monarch_l2'), "Missing (monarch_l2)"
-    assert hasattr(block, 'monarch_m2'), "Missing (monarch_m2)"
+    assert hasattr(block, 'absorber2'), "Missing (absorber2)"
     assert hasattr(block, 'monarch_r2'), "Missing (monarch_r2)"
     print(
-        f"  [PASS] Test 7 - PhotonFlowBlock(256): sequential chain, "
+        f"  [PASS] Test 7 - PhotonFlowBlock(256): "
         f"gates=0 -> identity (diff={max_diff7:.2e})"
     )
 
