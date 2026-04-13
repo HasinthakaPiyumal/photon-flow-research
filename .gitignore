@@ -57,3 +57,4 @@ desktop.ini
 # ---- Claude Code local state ----
 .claude/settings.local.json
 GEMINI_READIN.md
+.mcp.json

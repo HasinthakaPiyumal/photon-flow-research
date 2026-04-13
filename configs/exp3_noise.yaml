@@ -20,7 +20,7 @@ model:
   type: photonflow
   in_dim: 784          # MNIST: 28x28x1 = 784
   hidden_dim: 784      # 28^2 (perfect square for MonarchLayer, matches MNIST in_dim)
-  num_blocks: 6        # 6 PhotonFlowBlocks
+  num_blocks: 4        # 4 blocks (each has 2 sub-layers = 8 total, parity with baseline)
   use_noise: true      # ENABLED — inject noise after each Monarch layer
   sigma_s: 0.02        # Shot noise std (CLAUDE.md spec)
   sigma_t: 0.01        # Thermal crosstalk std (CLAUDE.md spec)

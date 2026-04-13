@@ -189,31 +189,27 @@ class MonarchLayer(nn.Module):
 class PhotonFlowBlock(nn.Module):
     """One PhotonFlow block: the photonic analog of a transformer layer.
 
-    Round 3 architecture (paper-informed redesign):
-        x_in
-          -> DivisivePowerNorm(x_in)          # pre-norm (photonic)
-          -> adaLN modulate: (1+scale)*h+shift # electronic boundary
-          -> MonarchL                          # MZI mesh column 1
-          -> [PhotonicNoise]                   # training only
-          -> MonarchR                          # MZI mesh column 2
-          -> [PhotonicNoise]                   # training only
-          -> SaturableAbsorber                 # graphene waveguide
-          -> residual: x_in + alpha * h
+    Two sub-layers per block, mirroring DiT (Peebles 2023, Figure 3):
 
-    Key design changes from Round 1-2 (informed by reading the PDFs):
-        1. Pre-norm (norm BEFORE Monarch) -- standard in modern transformers,
-           more stable for deep networks.
-        2. adaLN-style scale+shift conditioning from time embedding replaces
-           the old additive time_proj. DiT Figure 5 (Peebles 2023, p.4199)
-           shows adaLN dramatically outperforms additive conditioning.
-           scale and shift are zero-initialized so the block starts as
-           norm(x) -> identity monarch -> absorber = simple pass-through.
-        3. No separate time_proj -- time conditioning is entirely through
-           adaLN scale+shift applied to the normalized input.
+      Sub-layer 1 -- "Attention" (spatial mixing via Monarch pair):
+        norm1(x) -> adaLN(scale1, shift1) -> MonarchL -> [Noise] -> MonarchR
+        -> [Noise] -> Absorber -> gated residual (gate1)
+
+      Sub-layer 2 -- "MLP" (nonlinear capacity via second Monarch pair):
+        norm2(x) -> adaLN(scale2, shift2) -> MonarchL2 -> Absorber2
+        -> MonarchR2 -> gated residual (gate2)
+
+    Dao 2022 Section 4: Monarch replaces weights in BOTH attention AND FFN.
+    Sub-layer 2 is the photonic FFN -- absorber between two Monarch layers
+    acts like the activation in a standard MLP (Linear -> GELU -> Linear).
+
+    adaLN-Zero produces 6 per-dim vectors: scale1, shift1, gate1,
+    scale2, shift2, gate2 (zero-initialized so block starts as identity).
 
     Hardware mapping:
         DivisivePowerNorm  <->  Microring resonator + photodetector feedback
         adaLN scale/shift  <->  Electronic boundary (same as norm gain/bias)
+        adaLN gate         <->  Per-channel variable optical attenuator
         MonarchL, R        <->  MZI mesh array (two columns of beamsplitters)
         SaturableAbsorber  <->  Graphene waveguide insert
         PhotonicNoise      <->  Shot noise + thermal crosstalk (training sim)
@@ -237,29 +233,24 @@ class PhotonFlowBlock(nn.Module):
         super().__init__()
         self.dim = dim
 
-        # --- adaLN-Zero conditioning (electronic, at optical-electronic boundary) ---
-        # Projects time embedding to per-dimension scale, shift, AND gate vectors.
-        # Zero-initialized so at step 0: scale=0, shift=0, gate=0 → block is
-        # identity (gate kills the photonic path output). As training progresses,
-        # gates gradually open, allowing Monarch layers to contribute — exactly
-        # the DiT adaLN-Zero pattern (Peebles 2023, Figure 3, page 4199).
-        # Hardware: gate = per-channel variable optical attenuation (micro-ring
-        # modulators), controlled by time embedding at the electronic boundary.
+        # --- adaLN-Zero: 6 per-dim vectors (DiT Figure 3, page 4199) ---
+        # scale1, shift1, gate1 for sub-layer 1 ("attention")
+        # scale2, shift2, gate2 for sub-layer 2 ("MLP")
+        # Zero-initialized so both sub-layers start as identity.
         self.adaLN_proj = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(time_dim, 3 * dim),  # scale + shift + gate
+            nn.Linear(time_dim, 6 * dim),
         )
         nn.init.zeros_(self.adaLN_proj[-1].weight)
         nn.init.zeros_(self.adaLN_proj[-1].bias)
 
-        # --- Pre-norm (photonic: microring resonator + photodetector) ---
-        self.norm = DivisivePowerNorm(num_features=dim)
-
-        # --- Monarch layer pair (photonic: MZI mesh array) ---
+        # --- Sub-layer 1: "Attention" (Monarch pair for spatial mixing) ---
+        self.norm1 = DivisivePowerNorm(num_features=dim)
         self.monarch_l = MonarchLayer(dim)
         self.monarch_r = MonarchLayer(dim)
+        self.absorber1 = SaturableAbsorber()
 
-        # --- Photonic noise injection (training only, disabled at eval) ---
+        # --- Photonic noise injection (sub-layer 1 only, training only) ---
         if use_noise:
             self.noise_l = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
             self.noise_r = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
@@ -267,8 +258,13 @@ class PhotonFlowBlock(nn.Module):
             self.noise_l = None
             self.noise_r = None
 
-        # --- Photonic nonlinearity (graphene waveguide) ---
-        self.absorber = SaturableAbsorber()          # tanh(0.8x)/0.8
+        # --- Sub-layer 2: "MLP" (Monarch-Absorber-Monarch, photonic FFN) ---
+        # Mirrors standard MLP: Linear -> Activation -> Linear
+        # MonarchL2 -> Absorber2 -> MonarchR2
+        self.norm2 = DivisivePowerNorm(num_features=dim)
+        self.monarch_l2 = MonarchLayer(dim)
+        self.absorber2 = SaturableAbsorber()
+        self.monarch_r2 = MonarchLayer(dim)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -279,32 +275,29 @@ class PhotonFlowBlock(nn.Module):
         Returns:
             (B, dim) output features.
         """
-        # --- adaLN-Zero conditioning (electronic) ---
-        cond = self.adaLN_proj(t_emb)              # (B, 3*dim)
-        scale, shift, gate = cond.chunk(3, dim=-1)  # each (B, dim)
+        # --- 6 conditioning vectors from time embedding ---
+        cond = self.adaLN_proj(t_emb)  # (B, 6*dim)
+        s1, sh1, g1, s2, sh2, g2 = cond.chunk(6, dim=-1)  # each (B, dim)
 
-        # --- Pre-norm + modulation ---
-        # Norm is photonic (microring resonator measures optical power).
-        # Scale/shift is electronic (at the optical-electronic boundary).
-        h = (1 + scale) * self.norm(x) + shift      # (B, dim)
-
-        # --- Photonic core (MZI mesh) ---
+        # --- Sub-layer 1: "Attention" (spatial mixing) ---
+        h = (1 + s1) * self.norm1(x) + sh1
         h = self.monarch_l(h)
         if self.noise_l is not None:
             h = self.noise_l(h)
-
         h = self.monarch_r(h)
         if self.noise_r is not None:
             h = self.noise_r(h)
+        h = self.absorber1(h)
+        x = x + g1 * h
 
-        # --- Photonic nonlinearity ---
-        h = self.absorber(h)
+        # --- Sub-layer 2: "MLP" (nonlinear feature transform) ---
+        h = (1 + s2) * self.norm2(x) + sh2
+        h = self.monarch_l2(h)
+        h = self.absorber2(h)       # activation BETWEEN two linears (like GELU in MLP)
+        h = self.monarch_r2(h)
+        x = x + g2 * h
 
-        # --- Gated residual (DiT adaLN-Zero pattern) ---
-        # gate starts at 0 (zero-init adaLN) → block is identity at step 0.
-        # gate gradually opens during training → simple-to-complex learning.
-        # Hardware: per-channel variable optical attenuator (micro-ring).
-        return x + gate * h
+        return x
 
     def extra_repr(self) -> str:
         use_noise = self.noise_l is not None
@@ -518,7 +511,7 @@ if __name__ == "__main__":
         assert oi.shape == (2, d), f"Shape mismatch for dim={d}"
     print(f"  [PASS] Test 6 - Valid dims: {valid_dims}")
 
-    # --- Test 7: PhotonFlowBlock with adaLN-Zero (gate=0 → identity) ---
+    # --- Test 7: PhotonFlowBlock with 2 sub-layers + adaLN-Zero ---
     block = PhotonFlowBlock(dim=256, time_dim=256, use_noise=False)
     block.eval()
     x7 = torch.randn(4, 256)
@@ -527,17 +520,19 @@ if __name__ == "__main__":
     assert out7.shape == (4, 256), f"Block output shape: {out7.shape}"
     assert not torch.isnan(out7).any(), "NaN in block output"
     assert not torch.isinf(out7).any(), "Inf in block output"
-    # With zero-init adaLN (scale=0, shift=0, gate=0):
-    # h = (1+0)*norm(x) + 0 = norm(x)
-    # output = x + 0 * absorber(monarch(norm(x))) = x  (identity!)
-    # Block should be near-identity at initialization
+    # With zero-init adaLN (all 6 vectors = 0):
+    # gate1=0 kills sub-layer 1, gate2=0 kills sub-layer 2
+    # Block is identity at initialization
     max_diff7 = (out7 - x7).abs().max().item()
     assert max_diff7 < 1e-5, (
-        f"Block with gate=0 should be identity, got diff={max_diff7:.2e}"
+        f"Block with gates=0 should be identity, got diff={max_diff7:.2e}"
     )
+    # Verify 2 sub-layers exist
+    assert hasattr(block, 'monarch_l2'), "Missing MLP sub-layer (monarch_l2)"
+    assert hasattr(block, 'absorber2'), "Missing MLP sub-layer (absorber2)"
     print(
-        f"  [PASS] Test 7 - PhotonFlowBlock(256) + adaLN-Zero: "
-        f"gate=0 -> identity (diff={max_diff7:.2e})"
+        f"  [PASS] Test 7 - PhotonFlowBlock(256): 2 sub-layers, "
+        f"gates=0 -> identity (diff={max_diff7:.2e})"
     )
 
     # --- Test 8: PhotonFlowModel full forward (MNIST: hidden_dim=784) ---
