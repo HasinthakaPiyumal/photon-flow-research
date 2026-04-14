@@ -74,15 +74,37 @@ class SaturableAbsorber(nn.Module):
 
     Args:
         alpha (float): Saturation slope parameter. Default 0.8.
-                       Fixed (not learnable) — represents a hardware-chosen
-                       operating regime, not a free parameter.
+                       When `learnable_alpha=True`, this is the INITIAL value of
+                       a per-module learnable parameter; the optimizer can move
+                       it to represent, say, a thermally-tuned absorber.
+        learnable_alpha (bool): If True, alpha becomes a learnable parameter
+                       (one scalar per SaturableAbsorber instance). Default False
+                       (matches Shen 2017 fixed-operating-regime assumption).
+        leaky_slope (float): Coefficient of an optional linear pass-through:
+                       output = tanh(a*x)/a + leaky_slope * x.  Default 0.0
+                       (pure tanh, same as before).  A small positive leaky
+                       term (e.g., 0.05) preserves a linear "bypass" past the
+                       saturation cap, which is photonically realisable as a
+                       parallel unabsorbed-light path; empirically helps escape
+                       the ±1/alpha magnitude ceiling when the target range
+                       exceeds it (e.g., CFM velocity targets at t≈0).
     """
 
-    def __init__(self, alpha: float = 0.8) -> None:
+    def __init__(
+        self,
+        alpha: float = 0.8,
+        learnable_alpha: bool = False,
+        leaky_slope: float = 0.0,
+    ) -> None:
         super().__init__()
         if alpha <= 0:
             raise ValueError(f"alpha must be positive, got {alpha}")
-        self.alpha = alpha
+        if learnable_alpha:
+            self.alpha = nn.Parameter(torch.tensor(float(alpha)))
+        else:
+            self.register_buffer("alpha", torch.tensor(float(alpha)))
+        self.learnable_alpha = learnable_alpha
+        self.leaky_slope = float(leaky_slope)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply saturable-absorber transfer function.
@@ -91,12 +113,25 @@ class SaturableAbsorber(nn.Module):
             x: Input tensor of any shape.
 
         Returns:
-            Tensor of the same shape as x, values in (-1/alpha, +1/alpha).
+            Tensor of the same shape as x. With leaky_slope=0 values lie in
+            (-1/alpha, +1/alpha); with leaky_slope>0 the output is unbounded but
+            bounded-error vs the pure-tanh form.
         """
-        return torch.tanh(self.alpha * x) / self.alpha
+        # Clamp alpha > eps to avoid 1/0 during training.
+        a = self.alpha if not self.learnable_alpha else self.alpha.clamp(min=1e-3)
+        out = torch.tanh(a * x) / a
+        if self.leaky_slope != 0.0:
+            out = out + self.leaky_slope * x
+        return out
 
     def extra_repr(self) -> str:
-        return f"alpha={self.alpha}"
+        a_val = self.alpha.item() if torch.is_tensor(self.alpha) else self.alpha
+        extras = [f"alpha={a_val:.3f}"]
+        if self.learnable_alpha:
+            extras.append("learnable_alpha=True")
+        if self.leaky_slope != 0.0:
+            extras.append(f"leaky_slope={self.leaky_slope}")
+        return ", ".join(extras)
 
 
 # ---------------------------------------------------------------------------

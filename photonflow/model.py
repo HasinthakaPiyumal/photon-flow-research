@@ -152,11 +152,43 @@ class MonarchLayer(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
+        """Initialise the m x m blocks of every L and R factor.
+
+        Modes:
+          - 'identity' (default): each block = I.  Trains into near-linear
+             collapse for deep structured nets (Hardt & Ma 2017).
+          - 'random': Xavier normal, gain 0.1.  Breaks the identity basin.
+          - 'orthogonal': each block is a random orthogonal m x m matrix (QR
+             of Gaussian).  Saxe, McClelland & Ganguli 2013 show this makes
+             deep-linear training time independent of depth.
+          - 'dct': each block is the DCT-II basis matrix of size m.  The
+             real-valued analogue of the DFT basis used in Monarch Mixer
+             (Wang 2023); photonically this IS the Fourier-mesh operation.
+        """
         for f in range(self.num_factors):
             if self._init_mode == "random":
                 for i in range(self.m):
                     nn.init.xavier_normal_(self.Ls[f].data[i], gain=0.1)
                     nn.init.xavier_normal_(self.Rs[f].data[i], gain=0.1)
+            elif self._init_mode == "orthogonal":
+                for i in range(self.m):
+                    # Random Gaussian -> QR -> take Q (m x m orthogonal).
+                    qL, _ = torch.linalg.qr(torch.randn(self.m, self.m))
+                    qR, _ = torch.linalg.qr(torch.randn(self.m, self.m))
+                    self.Ls[f].data[i].copy_(qL)
+                    self.Rs[f].data[i].copy_(qR)
+            elif self._init_mode == "dct":
+                # DCT-II basis: C[k, n] = sqrt(2/N) * cos(pi*(2n+1)*k/(2N)),
+                # with C[0, n] = sqrt(1/N). Orthogonal and frequency-ordered.
+                n_idx = torch.arange(self.m, dtype=torch.float32)
+                k_idx = torch.arange(self.m, dtype=torch.float32)
+                # angles[k, n] = pi * (2n+1) * k / (2m)
+                ang = math.pi * (2 * n_idx.unsqueeze(0) + 1) * k_idx.unsqueeze(1) / (2 * self.m)
+                C = math.sqrt(2.0 / self.m) * torch.cos(ang)
+                C[0] = math.sqrt(1.0 / self.m)
+                for i in range(self.m):
+                    self.Ls[f].data[i].copy_(C)
+                    self.Rs[f].data[i].copy_(C)
             else:
                 # Identity init: each factor = I, so product = I.
                 for i in range(self.m):
@@ -255,12 +287,16 @@ class PhotonFlowBlock(nn.Module):
         num_monarch_factors: int = 1,
         absorber_alpha: float = 0.8,
         mean_center_norm: bool = False,
+        learnable_absorber_alpha: bool = False,
+        absorber_leaky_slope: float = 0.0,
     ) -> None:
         super().__init__()
         self.dim = dim
         # Architecture-experiment kwargs (used when building norm/absorber below)
         self.absorber_alpha = absorber_alpha
         self.mean_center_norm = mean_center_norm
+        self.learnable_absorber_alpha = learnable_absorber_alpha
+        self.absorber_leaky_slope = absorber_leaky_slope
         # Depth-decayed residual (Wang et al. "Residual Connections Harm
         # Generative Representation Learning," ICLR 2025):
         # y = alpha_d * x + f(x) where alpha_d decreases with depth.
@@ -307,7 +343,11 @@ class PhotonFlowBlock(nn.Module):
         else:
             self.monarch_l = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
             self.monarch_r = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
-        self.absorber1 = SaturableAbsorber(alpha=self.absorber_alpha)
+        self.absorber1 = SaturableAbsorber(
+            alpha=self.absorber_alpha,
+            learnable_alpha=self.learnable_absorber_alpha,
+            leaky_slope=self.absorber_leaky_slope,
+        )
 
         # --- Photonic noise injection (training only) ---
         # Each Monarch pair (L→R) maps to ONE MZI mesh on chip.
@@ -332,7 +372,11 @@ class PhotonFlowBlock(nn.Module):
         # MonarchL2 -> Absorber2 -> MonarchR2
         self.norm2 = DivisivePowerNorm(num_features=dim, mean_center=self.mean_center_norm)
         self.monarch_l2 = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
-        self.absorber2 = SaturableAbsorber(alpha=self.absorber_alpha)
+        self.absorber2 = SaturableAbsorber(
+            alpha=self.absorber_alpha,
+            learnable_alpha=self.learnable_absorber_alpha,
+            leaky_slope=self.absorber_leaky_slope,
+        )
         self.monarch_r2 = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
@@ -453,6 +497,8 @@ class PhotonFlowModel(nn.Module):
         num_monarch_factors: int = 1,
         absorber_alpha: float = 0.8,
         mean_center_norm: bool = False,
+        learnable_absorber_alpha: bool = False,
+        absorber_leaky_slope: float = 0.0,
     ) -> None:
         super().__init__()
         # Validate hidden_dim is a perfect square
@@ -514,6 +560,8 @@ class PhotonFlowModel(nn.Module):
                 num_monarch_factors=num_monarch_factors,
                 absorber_alpha=absorber_alpha,
                 mean_center_norm=mean_center_norm,
+                learnable_absorber_alpha=learnable_absorber_alpha,
+                absorber_leaky_slope=absorber_leaky_slope,
             )
             for i in range(num_blocks)
         ])
