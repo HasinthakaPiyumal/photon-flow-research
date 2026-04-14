@@ -1,64 +1,94 @@
 # exp2_mnist.yaml
-# PhotonFlow (Monarch layers) on MNIST — no noise injection
-# Purpose: Sanity check — "do Monarch layers work for generation?"
+# PhotonFlow (Monarch layers) on MNIST -- v17 champion config
 #
-# Training improvements applied:
-#   - Logit-normal timestep sampling (Esser et al. ICML 2024, SD3 paper)
-#     Biases training toward intermediate timesteps where velocity prediction
-#     is hardest. rf/lognorm(0.00, 1.00) outperforms uniform sampling.
-#   - EMA of model weights (Karras et al. CVPR 2024)
-#     EMA weights produce better generation quality than raw training weights.
-#   - Cosine LR schedule with warmup (standard practice)
-#     Prevents early divergence and provides smooth annealing.
+# Source: kaggle/photonflow-gap-sweep-2k-steps v17 + temp/REPORT.md +
+# photonflow_experiments_report.md.  At baseline-parity parameter count
+# (4.93M, vs DiT baseline's 4.89M = 1.01x), this recipe reaches a 0.0491
+# uniform-t CFM eval-loss gap to the attention baseline at 2,000 steps.
+# Beats the previous 18.5M-parameter recipe (gap 0.0496) by 3.75x compression.
+#
+# Architecture-side levers (all newly added to photonflow library):
+#   - MonarchLayer(init='random'): off-identity init breaks the
+#     "near-linear" basin (Hardt & Ma 2017, arXiv:1611.04231) that
+#     traps structured-matrix nets at gap 0.084.
+#   - SaturableAbsorber(leaky_slope=0.05): linear pass-through past
+#     the +/-1.25 tanh saturation cap; lets CFM velocity targets that
+#     exceed the cap propagate. Photonically: 5% Y-split bypass around
+#     graphene waveguide -- no extra MZI mesh.
+#   - adaln_bottleneck=8: factor adaLN_proj as
+#     Linear(time_dim, 8) -> Linear(8, 6*hidden_dim) instead of one wide
+#     Linear(time_dim, 6*hidden_dim).  87% of v11's per-block params
+#     came from the wide projection.  Bottleneck of 8 retains time
+#     conditioning while cutting 12B to about 0.3B per block at hidden=784.
+#   - gate_init=0.5 + adaln_init_std=0.02: aggressive but stable initial
+#     gating (Peebles 2023 + this sprint's lr sweep).
+#
+# Training-side levers:
+#   - lr=1.7e-3 with 600-step warmup, cosine decay to 0 over total_steps.
+#   - PLAIN uniform-t CFMLoss (no logit-normal, no direction loss, no
+#     time-weighted loss).  These improvements were tested in the
+#     iter1-iter6 long-horizon CPU sweep and v2/v4/v6 Kaggle pushes,
+#     and were neutral or slightly negative at the 2K-step horizon.
+#     They MAY help at long horizons but are off here for direct
+#     comparability with the baseline notebook (notebooks/02_*.ipynb).
 #
 # Run via: notebooks/03_exp2_photonflow_mnist.ipynb
 
 experiment:
   name: exp2_photonflow_mnist
-  description: "PhotonFlow with Monarch layers, logit-normal sampling, EMA (MNIST)"
+  description: "PhotonFlow v17 champion -- baseline-parity (4.93M params), gap 0.0491 @ 2K steps"
 
 model:
   type: photonflow
-  in_dim: 784          # MNIST: 28x28x1 = 784
-  hidden_dim: 784      # 28^2 — no bottleneck, matches input dim
-  num_blocks: 8
+  in_dim: 784                 # MNIST 28x28
+  hidden_dim: 784             # v12 finding: 256 fails (info bottleneck), 784 is required
+  num_blocks: 14              # v15-v17 sweet spot
+  time_dim: 256
   use_noise: false
   sigma_s: 0.0
   sigma_t: 0.0
-  gate_init: 0.1
-  depth_decay_residual: true
-  adaln_init_std: 0.02
-  num_monarch_factors: 2
+  # adaLN-Zero conditioning
+  gate_init: 0.5              # v6: > stock 0.1
+  adaln_init_std: 0.02        # Gaussian adaLN init (DiT++)
+  adaln_bottleneck: 8         # v12-v17: cuts 87% of per-block params, bneck=8 sweet spot
+  # Monarch
+  num_monarch_factors: 1      # v6: stacked factors hurt at this scale
+  monarch_init: random        # v5 BREAKTHROUGH: off-identity init
+  depth_decay_residual: false # v5: false > true at any depth
+  # Activation
+  absorber_alpha: 0.8         # photonic default (Shen 2017 graphene)
+  absorber_leaky_slope: 0.05  # v11 BREAKTHROUGH: 5% linear bypass past +/-1.25 cap
+  learnable_absorber_alpha: false   # marginal; off keeps photonic interpretation clean
+  # Norm
+  mean_center_norm: false     # neutral at 2K (H2 disproven)
 
 data:
   dataset: mnist
-  batch_size: 128
+  batch_size: 128             # matches baseline notebook
   root: ./data
-  num_workers: 2
+  num_workers: 2              # 0 on Windows (Lambda transform pickling), 2 elsewhere
 
 training:
-  lr: 3.0e-4           # Higher LR for Monarch layers (ButterflyFlow uses 1e-3)
-  total_steps: 200000
-  checkpoint_every: 5000
-  sample_every: 5000
+  # The 2K-step recipe used to verify the v17 champion gap.  Scale up for
+  # quality runs (e.g. total_steps=20000 or 200000); keep lr+warmup ratio.
+  lr: 1.7e-3                  # v17 winner
+  total_steps: 2000           # gap-reproduction budget
+  warmup_steps: 600           # 30% of 2K -- used in v17 winner
+  lr_schedule: cosine         # cosine to 0
+  grad_clip: 1.0
+  checkpoint_every: 1000
+  sample_every: 500
   sample_steps: 20
   seed: 42
-  # Curriculum timestep sampling (arXiv 2603.12517, 2026)
-  # Phase 1: logit-normal (structure), Phase 2: uniform (boundaries)
-  time_sampling: curriculum
-  logit_normal_mean: 0.0
-  logit_normal_std: 1.0
-  curriculum_transition_frac: 0.6
-  # Velocity direction loss (FasterDiT, Yao et al. NeurIPS 2024)
-  direction_loss_weight: 0.5
-  # Time-dependent loss weighting (arXiv 2511.16599, 2025)
-  loss_weight_gamma: 5.0
-  # Cosine LR with warmup
-  lr_schedule: cosine
-  warmup_steps: 2000
+  # Plain uniform CFM loss (matches baseline; gives directly-comparable numbers)
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
 
+# EMA disabled at 2K steps -- decay=0.9999 needs an effective window much
+# larger than the run length to be useful.
 ema:
-  enabled: true
+  enabled: false
   decay: 0.9999
 
 qat:
