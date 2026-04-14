@@ -476,6 +476,7 @@ class Trainer:
             use_noise=mcfg.get("use_noise", True),
             sigma_s=mcfg.get("sigma_s", 0.02),
             sigma_t=mcfg.get("sigma_t", 0.01),
+            shot_signal_dependent=mcfg.get("shot_signal_dependent", False),
             gate_init=mcfg.get("gate_init", 0.0),
             seq_dim=mcfg.get("seq_dim", None),
             feat_dim=mcfg.get("feat_dim", None),

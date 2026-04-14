@@ -245,6 +245,7 @@ class PhotonFlowBlock(nn.Module):
         use_noise: bool = True,
         sigma_s: float = 0.02,
         sigma_t: float = 0.01,
+        shot_signal_dependent: bool = False,
         gate_init: float = 0.0,
         seq_dim: int = None,
         feat_dim: int = None,
@@ -309,8 +310,14 @@ class PhotonFlowBlock(nn.Module):
         # Shen 2017 Methods), not between L and R within the same mesh.
         # → 1 noise module per Monarch pair, 2 per block, 16 total for 8 blocks.
         if use_noise:
-            self.noise1 = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
-            self.noise2 = PhotonicNoise(sigma_s=sigma_s, sigma_t=sigma_t)
+            self.noise1 = PhotonicNoise(
+                sigma_s=sigma_s, sigma_t=sigma_t,
+                shot_signal_dependent=shot_signal_dependent,
+            )
+            self.noise2 = PhotonicNoise(
+                sigma_s=sigma_s, sigma_t=sigma_t,
+                shot_signal_dependent=shot_signal_dependent,
+            )
         else:
             self.noise1 = None
             self.noise2 = None
@@ -337,7 +344,12 @@ class PhotonFlowBlock(nn.Module):
         s1, sh1, g1, s2, sh2, g2 = cond.chunk(6, dim=-1)  # each (B, dim)
 
         # --- Sub-layer 1: Spatial mixing ---
-        # MonarchL → MonarchR = one MZI mesh → noise at mesh output
+        # MonarchL → MonarchR → absorber → noise (at readout, post-nonlinearity)
+        # Noise AFTER absorber matches photonic hardware: shot + thermal noise
+        # appear at the photodetector READOUT (after graphene absorber nonlinearity),
+        # not between MZI columns. This also prevents the absorber's tanh from
+        # distorting noise distribution and attenuating noise gradients
+        # (StrC-ONN 2025: noise accumulates along forward path — minimize injections).
         h = (1 + s1) * self.norm1(x) + sh1
         if self.use_two_axis:
             B = h.shape[0]
@@ -350,9 +362,9 @@ class PhotonFlowBlock(nn.Module):
         else:
             h = self.monarch_l(h)
             h = self.monarch_r(h)
-        if self.noise1 is not None:
-            h = self.noise1(h)      # Shot + thermal noise at MZI mesh output
         h = self.absorber1(h)
+        if self.noise1 is not None:
+            h = self.noise1(h)      # Shot + thermal noise at photodetector readout
         x = self.residual_scale * x + g1 * h
 
         # --- Sub-layer 2: "MLP" (nonlinear feature transform) ---
@@ -426,6 +438,7 @@ class PhotonFlowModel(nn.Module):
         use_noise: bool = True,
         sigma_s: float = 0.02,
         sigma_t: float = 0.01,
+        shot_signal_dependent: bool = False,
         gate_init: float = 0.0,
         seq_dim: int = None,
         feat_dim: int = None,
@@ -482,6 +495,7 @@ class PhotonFlowModel(nn.Module):
                 use_noise=use_noise,
                 sigma_s=sigma_s,
                 sigma_t=sigma_t,
+                shot_signal_dependent=shot_signal_dependent,
                 gate_init=gate_init,
                 seq_dim=seq_dim,
                 feat_dim=feat_dim,

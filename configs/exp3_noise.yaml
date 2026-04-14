@@ -21,7 +21,12 @@ model:
   use_noise: true
   sigma_s: 0.005             # 5x above Shen 2017 hardware measurement (0.001)
   sigma_t: 0.003             # Proportionally scaled thermal crosstalk
-  noise_warmup_steps: 10000   # Ramp noise from 0→full over first 10K steps
+  shot_signal_dependent: true  # Shen 2017 physically-accurate model: noise_i ~ N(0, (sigma_s*|x_i|)^2)
+                                # Noise scales WITH signal → prevents accumulation blow-up
+                                # and matches real photonic hardware (Poisson photon statistics)
+  noise_warmup_steps: 30000   # Extended warmup: 15% of 200K (was 10K=5%)
+                              # Lets model fully learn signal before noise challenges it
+                              # (research: "large noise early, decay" works best — Zhou et al. 2019)
   noise_warmup_schedule: cosine  # cosine ramp (smoother than linear at boundary)
   noise_augment_k: 2             # Average gradient over K noise realizations per step
   gate_init: 0.1
