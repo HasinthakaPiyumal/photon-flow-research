@@ -132,6 +132,27 @@ class PhotonicNoise(nn.Module):
                          noise_i ~ N(0, (sigma_s * |x_i|)^2).
                          If False (default), use the simplified additive model:
                          noise_i ~ N(0, sigma_s^2), independent of signal.
+        phase_noise_sigma (float): M8b honesty mitigation.  Shen 2017 reports
+                         a separate sigma_phi ~= 5e-3 rad phase-encoding noise
+                         that lives on the MZI phase angles, not on the output
+                         tensor.  We model its effect on the Monarch output as
+                         a rank-1 multiplicative Gaussian jitter
+                         `x *= 1 + phase_noise_sigma * randn_like(x)`.  This is
+                         a first-order proxy only -- the true effect couples
+                         through the matrix multiply -- but it at least
+                         exercises a MULTIPLICATIVE noise channel during
+                         training.  Default 0.0 (OFF; preserves legacy output).
+        cumulative_loss_db_per_stage (float): M12 honesty mitigation.  Every
+                         photonic stage (MZI column, saturable absorber, norm)
+                         attenuates the signal by the factor
+                         `10^(-db_per_stage * (stage_index+1) / 20)`.  Shen 2017
+                         Methods reports single-MZI transmission ~= 0.9993, i.e.
+                         ~= 0.0003 dB per stage, NOT the 0.1 dB upper-bound the
+                         original mismatches.md cited.  Applied as a scalar
+                         multiplier after the noise injection.  Default 0.0
+                         (OFF).
+        stage_index (int): Zero-based index of this noise module in the forward
+                         depth order; cumulative loss grows with it.  Default 0.
     """
 
     def __init__(
@@ -140,16 +161,42 @@ class PhotonicNoise(nn.Module):
         sigma_t: float = 0.01,
         enabled: bool = True,
         shot_signal_dependent: bool = False,
+        phase_noise_sigma: float = 0.0,
+        cumulative_loss_db_per_stage: float = 0.0,
+        stage_index: int = 0,
     ) -> None:
         super().__init__()
         if sigma_s < 0:
             raise ValueError(f"sigma_s must be >= 0, got {sigma_s}")
         if sigma_t < 0:
             raise ValueError(f"sigma_t must be >= 0, got {sigma_t}")
+        if phase_noise_sigma < 0:
+            raise ValueError(
+                f"phase_noise_sigma must be >= 0, got {phase_noise_sigma}"
+            )
+        if cumulative_loss_db_per_stage < 0:
+            raise ValueError(
+                "cumulative_loss_db_per_stage must be >= 0, "
+                f"got {cumulative_loss_db_per_stage}"
+            )
+        if stage_index < 0:
+            raise ValueError(f"stage_index must be >= 0, got {stage_index}")
         self.sigma_s = sigma_s
         self.sigma_t = sigma_t
         self.enabled = enabled
         self.shot_signal_dependent = shot_signal_dependent
+        self.phase_noise_sigma = float(phase_noise_sigma)
+        self.cumulative_loss_db_per_stage = float(cumulative_loss_db_per_stage)
+        self.stage_index = int(stage_index)
+        # Pre-compute the cumulative transmission factor once; it is a fixed
+        # scalar (no gradients, not learnable).  At 0 dB/stage this is 1.0
+        # exactly, so the forward pass is a true NO-OP when the kwarg is off.
+        if self.cumulative_loss_db_per_stage > 0.0:
+            self._cumulative_atten = 10.0 ** (
+                -self.cumulative_loss_db_per_stage * (self.stage_index + 1) / 20.0
+            )
+        else:
+            self._cumulative_atten = 1.0
 
         # Nearest-neighbour thermal crosstalk kernel: [left, self, right]
         # shape (out_channels=1, in_channels=1, kernel_size=3) for F.conv1d
@@ -191,8 +238,17 @@ class PhotonicNoise(nn.Module):
 
         # Noise warmup scaling (default 1.0 = full noise)
         scale = getattr(self, '_noise_scale', 1.0)
-        if scale == 0.0:
+        if scale == 0.0 and self.phase_noise_sigma == 0.0 and self._cumulative_atten == 1.0:
+            # Absolutely nothing to do — true no-op.
             return x
+
+        # ── Phase-space noise (M8b honesty proxy) ──────────────────
+        # Applied BEFORE the additive shot/thermal term so it sees the clean
+        # Monarch output.  Rank-1 multiplicative jitter on the output tensor
+        # stands in for the actual sigma_phi perturbation of the MZI angles.
+        if self.phase_noise_sigma > 0.0:
+            jitter = 1.0 + self.phase_noise_sigma * torch.randn_like(x)
+            x = x * jitter
 
         # ── Shot noise ──────────────────────────────────────────────
         if self.shot_signal_dependent:
@@ -229,16 +285,31 @@ class PhotonicNoise(nn.Module):
 
         thermal = self.sigma_t * corr.reshape(orig_shape)
 
-        return x + scale * (shot + thermal)
+        out = x + scale * (shot + thermal)
+        # ── Cumulative optical loss (M12) ──────────────────────────
+        # Multiplicative attenuation that grows with stage depth.  No-op at
+        # `cumulative_loss_db_per_stage == 0.0` because `_cumulative_atten == 1.0`.
+        if self._cumulative_atten != 1.0:
+            out = out * self._cumulative_atten
+        return out
 
     # ------------------------------------------------------------------
 
     def extra_repr(self) -> str:
-        return (
-            f"sigma_s={self.sigma_s}, sigma_t={self.sigma_t}, "
-            f"enabled={self.enabled}, "
-            f"shot_signal_dependent={self.shot_signal_dependent}"
-        )
+        extras = [
+            f"sigma_s={self.sigma_s}",
+            f"sigma_t={self.sigma_t}",
+            f"enabled={self.enabled}",
+            f"shot_signal_dependent={self.shot_signal_dependent}",
+        ]
+        if self.phase_noise_sigma > 0.0:
+            extras.append(f"phase_noise_sigma={self.phase_noise_sigma}")
+        if self.cumulative_loss_db_per_stage > 0.0:
+            extras.append(
+                f"cumulative_loss_db_per_stage={self.cumulative_loss_db_per_stage}"
+            )
+            extras.append(f"stage_index={self.stage_index}")
+        return ", ".join(extras)
 
 
 # ---------------------------------------------------------------------------

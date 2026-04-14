@@ -88,23 +88,43 @@ class SaturableAbsorber(nn.Module):
                        parallel unabsorbed-light path; empirically helps escape
                        the ±1/alpha magnitude ceiling when the target range
                        exceeds it (e.g., CFM velocity targets at t≈0).
+        intensity_mode (str): How to apply the nonlinearity to a signed real
+                       input.  "signed" (default) = legacy `tanh(a*x)/a` on the
+                       raw signed field amplitude.  "differential" splits x into
+                       non-negative intensity arms `pos=relu(x)`, `neg=relu(-x)`
+                       (the Zhu/Jiang 2026 dual-λ encoding on differential
+                       photocurrent -- see mismatches.md M9) and evaluates
+                       `(tanh(a*pos) - tanh(a*neg))/a`.  Because `tanh` is odd,
+                       the two modes are **numerically identical** on any real
+                       input; the value of "differential" is purely that the
+                       forward pass can now be described as acting on
+                       non-negative optical intensities, closing mismatch M2.
     """
+
+    _VALID_INTENSITY_MODES = ("signed", "differential")
 
     def __init__(
         self,
         alpha: float = 0.8,
         learnable_alpha: bool = False,
         leaky_slope: float = 0.0,
+        intensity_mode: str = "signed",
     ) -> None:
         super().__init__()
         if alpha <= 0:
             raise ValueError(f"alpha must be positive, got {alpha}")
+        if intensity_mode not in self._VALID_INTENSITY_MODES:
+            raise ValueError(
+                f"intensity_mode must be one of {self._VALID_INTENSITY_MODES}, "
+                f"got {intensity_mode!r}"
+            )
         if learnable_alpha:
             self.alpha = nn.Parameter(torch.tensor(float(alpha)))
         else:
             self.register_buffer("alpha", torch.tensor(float(alpha)))
         self.learnable_alpha = learnable_alpha
         self.leaky_slope = float(leaky_slope)
+        self.intensity_mode = intensity_mode
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply saturable-absorber transfer function.
@@ -119,7 +139,18 @@ class SaturableAbsorber(nn.Module):
         """
         # Clamp alpha > eps to avoid 1/0 during training.
         a = self.alpha if not self.learnable_alpha else self.alpha.clamp(min=1e-3)
-        out = torch.tanh(a * x) / a
+        if self.intensity_mode == "differential":
+            # M2 + M9 mitigation: Zhu/Jiang 2026 encodes signed values as two
+            # non-negative-intensity arms on separate wavelengths, and recombines
+            # them via differential photocurrent.  Mathematically identical to
+            # the signed path because tanh is odd:
+            #   (tanh(a*max(x,0)) - tanh(a*max(-x,0)))/a == tanh(a*x)/a
+            # so this is a NO-OP LOSS honesty rewrite, not a new nonlinearity.
+            pos = torch.relu(x)
+            neg = torch.relu(-x)
+            out = (torch.tanh(a * pos) - torch.tanh(a * neg)) / a
+        else:
+            out = torch.tanh(a * x) / a
         if self.leaky_slope != 0.0:
             out = out + self.leaky_slope * x
         return out
@@ -131,6 +162,8 @@ class SaturableAbsorber(nn.Module):
             extras.append("learnable_alpha=True")
         if self.leaky_slope != 0.0:
             extras.append(f"leaky_slope={self.leaky_slope}")
+        if self.intensity_mode != "signed":
+            extras.append(f"intensity_mode={self.intensity_mode!r}")
         return ", ".join(extras)
 
 

@@ -1,0 +1,120 @@
+# exp2_mnist_mitigated.yaml
+# PhotonFlow v17 champion config, with the 12 hardware / software mismatches
+# from `mismatches.md` addressed by real code-level kwargs (not doc tweaks).
+#
+# Derived from `configs/exp2_mnist.yaml` (v17 champion, gap 0.0491 @ 2K steps).
+# Everything architectural (hidden_dim=784, num_blocks=14, adaln_bottleneck=8,
+# gate_init=0.5, monarch_init=random, absorber_leaky_slope=0.05, lr=1.7e-3,
+# warmup=600, total=2000, batch=128, seed=42) is kept VERBATIM so the delta
+# versus v17 is attributable only to the mitigation toggles.
+#
+# Classification (from the planning phase):
+#   NO-OP LOSS -- mathematically identical forward pass (max|delta| < 1e-6).
+#   MILD       -- forward math changes, expected gap regression <= 0.01.
+#   DESTRUCTIVE-- OFF by default; shipped as flags only.
+#
+# ON in this config:
+#   M2 + M9  absorber_intensity_mode = differential
+#            Zhu/Jiang 2026 dual-wavelength / differential-photocurrent proxy.
+#            tanh is ODD so signed path == differential path; verified by
+#            max|delta| == 0.00e+00 in the backward-compat smoke test.
+#   M3       norm_affine_domain = electronic (documentation tag only)
+#   M5       monarch_bias = false
+#            Dao 2022 Def 3.1 has no bias; removing the 4*num_blocks*hidden
+#            = 43,904 electronic DAC+modulator operations.  Predicted +0.005
+#            gap.
+#   M8a      use_noise = true, sigma_s = 0.001, sigma_t = 0.005,
+#            shot_signal_dependent = true
+#            Shen 2017 Methods: sigma_D ~= 0.001 (photodetection) and
+#            sigma_phi ~= 5e-3 rad (phase encoding).  PhotonFlow default
+#            0.02 / 0.01 is 20x and 2x too aggressive.  Predicted +0.005
+#            gap versus use_noise=false.
+#   M12      cumulative_loss_db_per_stage = 0.0003
+#            Shen 2017 Methods single-MZI transmission 0.9993 gives a
+#            ~0.001 dB insertion loss per stage.  At 28 stages (14 blocks *
+#            2 Monarch pairs) the cumulative factor is ~ 0.999, i.e. <0.1%
+#            total.  Predicted +0.002 gap.
+#
+# OFF (DESTRUCTIVE -- shipped as flags but disabled for this run):
+#   M1       unitary_project = false
+#            Cayley projection onto O(m) would reduce block expressivity to
+#            m(m-1)/2 angles instead of m^2 params.  Wrecks 2K-step gap.
+#   M7       proj_style = dense
+#            Replacing the 784x784 nn.Linear I/O projections with
+#            MonarchLayer bookends removes two electronic operations but
+#            reduces capacity; predicted +0.03 gap (DESTRUCTIVE).
+#   M8b      phase_noise_sigma = 0.0
+#            Multiplicative rank-1 jitter proxy for phase-angle noise.
+#            Nonzero values add input-dependent stochasticity that hurts
+#            the 2K loss; enable for hardware-robustness runs, not here.
+#
+# Predicted gap (v17 0.0491 + sum of MILD costs): ~ 0.060.  Pass threshold
+# for this run: gap <= 0.06.
+#
+# Run via: notebooks/03_exp2_photonflow_mnist_mitigated.ipynb  (or a clone
+# of temp/photonflow.py that loads this YAML).
+
+experiment:
+  name: exp2_photonflow_mnist_mitigated
+  description: "v17 champion + mismatches.md honesty mitigations (M2/M3/M5/M8a/M12 ON; M1/M7/M8b flags OFF)"
+
+model:
+  type: photonflow
+  # --- v17 architecture, UNCHANGED ---
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 14
+  time_dim: 256
+  gate_init: 0.5
+  adaln_init_std: 0.02
+  adaln_bottleneck: 8
+  num_monarch_factors: 1
+  monarch_init: random
+  depth_decay_residual: false
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: false
+  mean_center_norm: false
+
+  # --- mitigations ON (NO-OP + MILD) ---
+  use_noise: true                     # M8a: enable PhotonicNoise
+  sigma_s: 0.001                      # M8a: Shen sigma_D (was 0.02)
+  sigma_t: 0.005                      # M8a: Shen sigma_phi-as-output proxy (was 0.01)
+  shot_signal_dependent: true         # M8a: Shen's physically accurate model
+  absorber_intensity_mode: differential   # M2 + M9: Zhu/Jiang dual-arm (NO-OP)
+  cumulative_loss_db_per_stage: 0.0003    # M12: Shen per-MZI transmission
+  monarch_bias: false                 # M5: Dao Def 3.1 has no additive bias
+
+  # --- mitigations OFF (DESTRUCTIVE flags) ---
+  unitary_project: false              # M1
+  proj_style: dense                   # M7
+  phase_noise_sigma: 0.0              # M8b
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 2000                   # 2K-step gap-reproduction budget
+  warmup_steps: 600
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 1000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp2_photonflow_mnist_mitigated

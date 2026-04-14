@@ -120,11 +120,22 @@ class MonarchLayer(nn.Module):
         dim  (int):  Feature dimension. Must be a perfect square.
         bias (bool): If True, adds a learnable bias to the output. Default True.
                      Note: bias is PhotonFlow's addition -- Dao 2022 Definition 3.1
-                     defines M = PLP^TR with no additive term.
+                     defines M = PLP^TR with no additive term.  Pass bias=False
+                     (mismatch M5) to drop the electronic per-channel modulator.
+        init (str):  Block init mode (see `_init_weights`).
+        num_factors (int): Number of stacked Monarch factors.
+        unitary_project (bool): M1 mitigation.  If True, the raw parameter blocks
+                     are projected to orthogonal m x m matrices via the Cayley
+                     transform Q = (I - A)(I + A)^{-1}, A = (raw - raw^T)/2,
+                     AT EVERY FORWARD.  This makes L_i and R_i a cascade of
+                     unitary gates -- matching the Reck/Clements MZI-mesh
+                     primitive in Shen 2017 -- but typically reduces
+                     expressivity relative to unconstrained dense blocks.
+                     Flagged DESTRUCTIVE for the 2K rerun; defaults to False.
     """
 
     def __init__(self, dim: int, bias: bool = True, init: str = "identity",
-                 num_factors: int = 1) -> None:
+                 num_factors: int = 1, unitary_project: bool = False) -> None:
         super().__init__()
         m = math.isqrt(dim)
         if m * m != dim:
@@ -135,6 +146,7 @@ class MonarchLayer(nn.Module):
         self.dim = dim
         self.m = m
         self.num_factors = num_factors
+        self.unitary_project = bool(unitary_project)
 
         # Stacked Monarch factors (Dao 2022, Section 3.2):
         # M = M_k * ... * M_2 * M_1, where each M_i = P L_i P^T R_i.
@@ -195,6 +207,24 @@ class MonarchLayer(nn.Module):
                     nn.init.eye_(self.Ls[f].data[i])
                     nn.init.eye_(self.Rs[f].data[i])
 
+    def _cayley_project(self, raw: torch.Tensor) -> torch.Tensor:
+        """Cayley transform: map the m x m parameter blocks onto O(m).
+
+        Q = (I - A)(I + A)^{-1}, where A = (raw - raw^T) / 2 is skew-symmetric.
+        Returns a batched orthogonal matrix of the same shape as `raw`
+        (expected shape: (m, m, m)).  Called inside `forward` only when
+        `unitary_project=True` -- otherwise the unconstrained parameters are
+        used directly, matching the legacy behaviour.
+        """
+        m = raw.shape[-1]
+        I = torch.eye(m, device=raw.device, dtype=raw.dtype)
+        I = I.expand(raw.shape[0], -1, -1)                   # (m, m, m)
+        A = 0.5 * (raw - raw.transpose(-1, -2))              # skew-symm
+        # Solve (I + A) Q = (I - A)  =>  Q = (I + A)^{-1}(I - A), then take
+        # the transpose so that Q Q^T = I (Cayley convention used in
+        # Arjovsky 2016, Lezcano-Casado 2019).
+        return torch.linalg.solve(I + A, I - A)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply stacked Monarch transform y = M_k ... M_2 M_1 x.
 
@@ -209,10 +239,20 @@ class MonarchLayer(nn.Module):
         B = x.shape[0]
 
         for f in range(self.num_factors):
+            # M1 mitigation: project to orthogonal blocks if requested.  At the
+            # default (unitary_project=False) this branch is skipped entirely
+            # and behaviour is bit-for-bit identical to the legacy code.
+            if self.unitary_project:
+                L = self._cayley_project(self.Ls[f])
+                R = self._cayley_project(self.Rs[f])
+            else:
+                L = self.Ls[f]
+                R = self.Rs[f]
+
             x = x.reshape(B, self.m, self.m)
-            x = torch.einsum("bki,kij->bkj", x, self.Rs[f])
+            x = torch.einsum("bki,kij->bkj", x, R)
             x = x.transpose(1, 2).contiguous()
-            x = torch.einsum("bki,kij->bkj", x, self.Ls[f])
+            x = torch.einsum("bki,kij->bkj", x, L)
             x = x.transpose(1, 2).contiguous()
             x = x.reshape(B, self.dim)
 
@@ -290,6 +330,13 @@ class PhotonFlowBlock(nn.Module):
         learnable_absorber_alpha: bool = False,
         absorber_leaky_slope: float = 0.0,
         adaln_bottleneck: int = 0,
+        # --- mismatches.md mitigation kwargs (all default to legacy behaviour) ---
+        monarch_bias: bool = True,                         # M5
+        absorber_intensity_mode: str = "signed",           # M2 + M9
+        unitary_project: bool = False,                     # M1
+        phase_noise_sigma: float = 0.0,                    # M8b
+        cumulative_loss_db_per_stage: float = 0.0,         # M12
+        block_index: int = 0,                              # M12 / stage indexing
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -298,6 +345,18 @@ class PhotonFlowBlock(nn.Module):
         self.mean_center_norm = mean_center_norm
         self.learnable_absorber_alpha = learnable_absorber_alpha
         self.absorber_leaky_slope = absorber_leaky_slope
+        # New honesty-mitigation kwargs
+        self.monarch_bias = monarch_bias
+        self.absorber_intensity_mode = absorber_intensity_mode
+        self.unitary_project = unitary_project
+        self.phase_noise_sigma = float(phase_noise_sigma)
+        self.cumulative_loss_db_per_stage = float(cumulative_loss_db_per_stage)
+        self.block_index = int(block_index)
+        # Each block owns TWO Monarch pairs (sub-layer 1 + sub-layer 2) and
+        # therefore TWO noise modules.  The cumulative-loss stage indices for
+        # this block are (2*block_index, 2*block_index + 1).
+        self._stage1 = 2 * self.block_index
+        self._stage2 = 2 * self.block_index + 1
         # Depth-decayed residual (Wang et al. "Residual Connections Harm
         # Generative Representation Learning," ICLR 2025):
         # y = alpha_d * x + f(x) where alpha_d decreases with depth.
@@ -354,32 +413,42 @@ class PhotonFlowBlock(nn.Module):
 
         # --- Sub-layer 1: Spatial mixing ---
         self.norm1 = DivisivePowerNorm(num_features=dim, mean_center=self.mean_center_norm)
+        _monarch_kwargs = dict(
+            init=monarch_init,
+            num_factors=num_monarch_factors,
+            bias=self.monarch_bias,                     # M5
+            unitary_project=self.unitary_project,       # M1
+        )
         if self.use_two_axis:
-            self.monarch_spatial_l = MonarchLayer(seq_dim, init=monarch_init, num_factors=num_monarch_factors)
-            self.monarch_spatial_r = MonarchLayer(seq_dim, init=monarch_init, num_factors=num_monarch_factors)
+            self.monarch_spatial_l = MonarchLayer(seq_dim, **_monarch_kwargs)
+            self.monarch_spatial_r = MonarchLayer(seq_dim, **_monarch_kwargs)
         else:
-            self.monarch_l = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
-            self.monarch_r = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
+            self.monarch_l = MonarchLayer(dim, **_monarch_kwargs)
+            self.monarch_r = MonarchLayer(dim, **_monarch_kwargs)
         self.absorber1 = SaturableAbsorber(
             alpha=self.absorber_alpha,
             learnable_alpha=self.learnable_absorber_alpha,
             leaky_slope=self.absorber_leaky_slope,
+            intensity_mode=self.absorber_intensity_mode,   # M2 + M9
         )
 
         # --- Photonic noise injection (training only) ---
         # Each Monarch pair (L→R) maps to ONE MZI mesh on chip.
         # Noise occurs at the OUTPUT of each mesh (Mourgias-Alexandris 2022,
         # Shen 2017 Methods), not between L and R within the same mesh.
-        # → 1 noise module per Monarch pair, 2 per block, 16 total for 8 blocks.
+        # → 1 noise module per Monarch pair, 2 per block, 2*num_blocks stages.
+        # stage_index is threaded so the cumulative optical-loss factor (M12)
+        # grows with depth through the network.
+        _noise_kwargs = dict(
+            sigma_s=sigma_s,
+            sigma_t=sigma_t,
+            shot_signal_dependent=shot_signal_dependent,
+            phase_noise_sigma=self.phase_noise_sigma,                   # M8b
+            cumulative_loss_db_per_stage=self.cumulative_loss_db_per_stage,  # M12
+        )
         if use_noise:
-            self.noise1 = PhotonicNoise(
-                sigma_s=sigma_s, sigma_t=sigma_t,
-                shot_signal_dependent=shot_signal_dependent,
-            )
-            self.noise2 = PhotonicNoise(
-                sigma_s=sigma_s, sigma_t=sigma_t,
-                shot_signal_dependent=shot_signal_dependent,
-            )
+            self.noise1 = PhotonicNoise(**_noise_kwargs, stage_index=self._stage1)
+            self.noise2 = PhotonicNoise(**_noise_kwargs, stage_index=self._stage2)
         else:
             self.noise1 = None
             self.noise2 = None
@@ -388,13 +457,14 @@ class PhotonFlowBlock(nn.Module):
         # Mirrors standard MLP: Linear -> Activation -> Linear
         # MonarchL2 -> Absorber2 -> MonarchR2
         self.norm2 = DivisivePowerNorm(num_features=dim, mean_center=self.mean_center_norm)
-        self.monarch_l2 = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
+        self.monarch_l2 = MonarchLayer(dim, **_monarch_kwargs)
         self.absorber2 = SaturableAbsorber(
             alpha=self.absorber_alpha,
             learnable_alpha=self.learnable_absorber_alpha,
             leaky_slope=self.absorber_leaky_slope,
+            intensity_mode=self.absorber_intensity_mode,   # M2 + M9
         )
-        self.monarch_r2 = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
+        self.monarch_r2 = MonarchLayer(dim, **_monarch_kwargs)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
@@ -517,6 +587,13 @@ class PhotonFlowModel(nn.Module):
         learnable_absorber_alpha: bool = False,
         absorber_leaky_slope: float = 0.0,
         adaln_bottleneck: int = 0,
+        # --- mismatches.md mitigation kwargs (all default to legacy behaviour) ---
+        monarch_bias: bool = True,                         # M5
+        proj_style: str = "dense",                         # M7 ("dense" | "monarch")
+        absorber_intensity_mode: str = "signed",           # M2 + M9
+        unitary_project: bool = False,                     # M1
+        phase_noise_sigma: float = 0.0,                    # M8b
+        cumulative_loss_db_per_stage: float = 0.0,         # M12
     ) -> None:
         super().__init__()
         # Validate hidden_dim is a perfect square
@@ -526,13 +603,44 @@ class PhotonFlowModel(nn.Module):
                 f"hidden_dim must be a perfect square for MonarchLayer, "
                 f"got {hidden_dim}. Valid: 256 (16^2), 784 (28^2), 1024 (32^2)."
             )
+        if proj_style not in ("dense", "monarch"):
+            raise ValueError(
+                f"proj_style must be 'dense' or 'monarch', got {proj_style!r}"
+            )
         self.in_dim = in_dim
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks
+        # --- mismatch-mitigation settings (stashed for repr + block wiring) ---
+        self.proj_style = proj_style
+        self.monarch_bias = monarch_bias
+        self.absorber_intensity_mode = absorber_intensity_mode
+        self.unitary_project = unitary_project
+        self.phase_noise_sigma = float(phase_noise_sigma)
+        self.cumulative_loss_db_per_stage = float(cumulative_loss_db_per_stage)
 
-        # --- Input / output projections (electronics-side) ---
-        self.input_proj = nn.Linear(in_dim, hidden_dim)
-        self.output_proj = nn.Linear(hidden_dim, in_dim)
+        # --- Input / output projections ---
+        # Default: dense nn.Linear (legacy + electronic boundary).
+        # proj_style="monarch": M7 mitigation replaces the bookends with
+        # MonarchLayer(hidden_dim) when shapes allow (in_dim == hidden_dim,
+        # which is true for the MNIST setup 784->784).  This eliminates two
+        # dense electronic layers but introduces two more MZI meshes with
+        # reduced representational capacity -- flagged DESTRUCTIVE.
+        if proj_style == "monarch" and in_dim == hidden_dim:
+            self.input_proj = MonarchLayer(
+                hidden_dim, bias=self.monarch_bias, init="random",
+                num_factors=num_monarch_factors,
+                unitary_project=self.unitary_project,
+            )
+            self.output_proj = MonarchLayer(
+                hidden_dim, bias=self.monarch_bias, init="random",
+                num_factors=num_monarch_factors,
+                unitary_project=self.unitary_project,
+            )
+        else:
+            # Legacy: dense electronic projections (the "honest" tag for this
+            # branch is that they ARE electronic -- see mismatches.md M7).
+            self.input_proj = nn.Linear(in_dim, hidden_dim)
+            self.output_proj = nn.Linear(hidden_dim, in_dim)
 
         # Output projection initialization.
         # DiT (Peebles 2023) uses zero-init so v_theta=0 at start, but this
@@ -543,8 +651,13 @@ class PhotonFlowModel(nn.Module):
         # Fix: small-init output_proj (std=0.02) allows gradients to reach all
         # 156 params from step 0 (verified: 156/156 vs 2/156 with zero-init).
         # Combined with gate_init > 0, this gives ~2x faster early convergence.
-        nn.init.normal_(self.output_proj.weight, std=0.02)
-        nn.init.zeros_(self.output_proj.bias)
+        # With proj_style="monarch" the output projection is a MonarchLayer
+        # whose blocks are already initialised by _init_weights() -- skip the
+        # dense re-init in that case and rely on the chosen Monarch init.
+        if isinstance(self.output_proj, nn.Linear):
+            nn.init.normal_(self.output_proj.weight, std=0.02)
+            if self.output_proj.bias is not None:
+                nn.init.zeros_(self.output_proj.bias)
 
         # --- Time embedding pipeline (electronics-side) ---
         # Fixed 256-dim sinusoidal encoding regardless of hidden_dim.
@@ -581,6 +694,13 @@ class PhotonFlowModel(nn.Module):
                 learnable_absorber_alpha=learnable_absorber_alpha,
                 absorber_leaky_slope=absorber_leaky_slope,
                 adaln_bottleneck=adaln_bottleneck,
+                # --- mismatch-mitigation kwargs ---
+                monarch_bias=monarch_bias,
+                absorber_intensity_mode=absorber_intensity_mode,
+                unitary_project=unitary_project,
+                phase_noise_sigma=phase_noise_sigma,
+                cumulative_loss_db_per_stage=cumulative_loss_db_per_stage,
+                block_index=i,
             )
             for i in range(num_blocks)
         ])
