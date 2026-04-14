@@ -1,0 +1,92 @@
+# exp_zero_oeo_stage1.yaml
+# PhotonFlow Stage-1 toward fully photonic (zero-OEO) inference graph.
+#
+# Stage 1 of the 4-stage plan in plans/abundant-juggling-gosling.md:
+#   - All GREEN kwargs from `bf53573` turned ON (no new code).
+#   - Closes M1 (unitary Monarch), M7 (Monarch bookends), M8b (phase-space noise),
+#     in addition to the Stage-0 mitigations (M2/M5/M8a/M9/M12) already in
+#     `exp2_mnist_mitigated.yaml`.
+#
+# Every kwarg corresponds to a silicon-photonic primitive published in the
+# 2023-2026 lit-review:
+#   * unitary_project        -- Shen 2017 Clements decomp; Zhan LPR 2024 on-chip
+#                               analytic-gradient MZI training; Nature 2026
+#                               end-to-end on-chip backprop.
+#   * proj_style=monarch     -- Dao 2022 Monarch; Nature Photonics 2024 single-chip
+#                               DNN with MZI-mesh bookends.
+#   * phase_noise_sigma=5e-3 -- Shen 2017 Methods reported phase-encoding noise
+#                               sigma_phi ~= 5e-3 rad.
+#   * absorber_intensity_mode=differential -- Zhu/Jiang 2026 dual-lambda encoding.
+#   * monarch_bias=false     -- Dao 2022 Def 3.1 has no additive bias.
+#   * Shen noise values (sigma_s=0.001, sigma_t=0.005, shot_signal_dependent=true).
+#   * cumulative_loss_db_per_stage=0.0003 -- Shen 2017 single-MZI transmission
+#                                             0.9993 (= ~0.0003 dB insertion loss).
+#
+# Target gap vs baseline (0.1734): 0.07 - 0.09 (Stage-1 prediction).
+#
+# Run via kaggle/photonflow-zero-oeo/ kernel.
+
+experiment:
+  name: exp_zero_oeo_stage1
+  description: "PhotonFlow Stage-1: all GREEN mitigations ON (M1/M7/M8b + M2/M5/M8a/M9/M12)"
+
+model:
+  type: photonflow
+  # --- v17 architecture backbone, UNCHANGED ---
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 14
+  time_dim: 256
+  gate_init: 0.5
+  adaln_init_std: 0.02
+  adaln_bottleneck: 8
+  num_monarch_factors: 1
+  monarch_init: random
+  depth_decay_residual: false
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: false
+  mean_center_norm: false
+
+  # --- Stage-0 mitigations (already ON in exp2_mnist_mitigated.yaml) ---
+  use_noise: true
+  sigma_s: 0.001                           # M8a: Shen sigma_D
+  sigma_t: 0.005                           # M8a: Shen sigma_phi proxy
+  shot_signal_dependent: true              # M8a: Shen's signal-dep shot noise
+  absorber_intensity_mode: differential    # M2 + M9: NO-OP (tanh odd)
+  cumulative_loss_db_per_stage: 0.0003     # M12: Shen per-MZI transmission
+  monarch_bias: false                      # M5: Dao 2022 Def 3.1
+
+  # --- Stage-1 new GREEN turn-ons ---
+  unitary_project: true                    # M1: Cayley parameterisation per MonarchLayer block
+  proj_style: monarch                      # M7: Monarch I/O bookends (MonarchLayer 784)
+  phase_noise_sigma: 0.005                 # M8b: Shen sigma_phi = 5e-3 rad, multiplicative jitter
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 2000
+  warmup_steps: 600
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 1000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_zero_oeo_stage1

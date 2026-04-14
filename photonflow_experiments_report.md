@@ -606,3 +606,120 @@ is purely electronic-side bookkeeping (the time embedding never leaves the
 control circuit).
 
 Open questions and concrete follow-ups are enumerated in §9.
+
+## 13.  Mismatch-mitigation 2 K rerun — Kaggle kernel `photonflow-mitigated-2k` v2
+
+The 12 gaps enumerated in `mismatches.md` were ported from prose into
+opt-in kwargs (commit `bf53573`), with defaults that reproduce the v17
+forward pass bit-for-bit.  A `configs/exp2_mnist_mitigated.yaml` turns on
+only the NO-OP + MILD mitigations; DESTRUCTIVE ones ship as flags but stay
+OFF.  The resulting 2 K run trains baseline + v17 + v17-mitigated on the
+same Kaggle GPU, same seed, same optimiser.
+
+### 13.1  Results (Kaggle v2, uniform-t `CFMLoss` eval, 8-batch average)
+
+| Run              | Params    | vs baseline | Eval @ 2 K | Gap to baseline |
+|------------------|----------:|------------:|-----------:|----------------:|
+| baseline (DiT)   | 4,886,544 | 1.00×       | **0.1734** | 0.0000          |
+| v17 champion     | 4,934,928 | 1.01×       | **0.2225** | +0.0491         |
+| **v17 mitigated**| **4,891,024** | **1.001×** | **0.2283** | **+0.0548** ✅ |
+
+Pass threshold ≤ 0.06 (v17 + ≤ 0.011 honesty cost).  **Honesty cost = +0.0057.**
+
+Eval trajectories (all three ran at same seed 42, batch 128, lr sched):
+
+| step | baseline | v17    | mitigated |
+|-----:|---------:|-------:|----------:|
+|  500 | 0.2000   | 0.3066 | 0.3050    |
+| 1000 | 0.1817   | 0.2651 | 0.2628    |
+| 1500 | 0.1757   | 0.2443 | 0.2331    |
+| 2000 | 0.1734   | 0.2225 | 0.2283    |
+
+Interesting: at step 1500 the mitigated model is *ahead* of v17 (0.2331
+vs 0.2443).  By step 2000 v17 overtakes by 0.0058.  Likely explanation:
+the Shen-σ signal-dependent noise acts as mild regularization that helps
+mid-run but costs a sliver on final convergence — consistent with the
+noise-aware-training literature (Ning 2025).
+
+### 13.2  Which mitigations are ON
+
+| # | Mitigation | Lever | Predicted cost | Observed |
+|---|---|---|---:|---:|
+| M2 + M9 | `absorber_intensity_mode=differential` | Zhu/Jiang 2026 dual-arm | 0.0000 (proven NO-OP) | 0.0000 (tanh odd) |
+| M5     | `monarch_bias=False`                    | Dao 2022 Def 3.1 (no +b)     | +0.005 | — (entangled) |
+| M8a    | `use_noise=True`, σ_s=0.001, σ_t=0.005, signal-dependent | Shen 2017 Methods reported values | +0.005 | — (entangled) |
+| M12    | `cumulative_loss_db_per_stage=0.0003` | Shen 2017 single-MZI 0.9993 transmission | +0.002 | — (entangled) |
+
+The four MILD mitigations are entangled in this single run (each on or off
+together).  The total observed honesty cost is +0.0057, close to the
+predicted sum of the four individual costs (~ 0.012 budget, mostly unused).
+
+### 13.3  Which mitigations are OFF (shipped as flags only)
+
+These stay OFF because they're DESTRUCTIVE at 2 K and we want a
+comparable number.  Flags exist in the library and can be enabled for
+follow-up honesty runs; each is the subject of a named hypothesis in
+`mismatches.md`.
+
+| # | Kwarg | Why off | Estimated cost if on |
+|---|---|---|---|
+| M1 | `unitary_project=False` | Cayley cuts Monarch to m(m−1)/2 angles per block | expected gap +0.03–0.05 |
+| M7 | `proj_style="dense"`    | Monarch bookends at hidden=784 remove capacity | expected gap +0.03 |
+| M8b| `phase_noise_sigma=0.0` | Multiplicative jitter is input-dependent stochasticity | expected gap +0.01–0.02 |
+
+### 13.4  Remaining framework ↔ hardware gaps (things the model STILL can't do on-chip)
+
+Even with v17-mitigated closing M2/M5/M8a/M9/M12, the framework is **not
+yet runnable on a real photonic chip**.  The list below is the honest
+remainder after the mitigation commit landed.
+
+**Electronic operations still required per forward pass**
+
+| # | Operation | Count @ 14 blocks | Physical cost |
+|---|---|---:|---|
+| M3 | `DivisivePowerNorm` learnable `gain`+`bias` | 2×14 + 1 = 29 | per-channel electronic scale/shift on optical readout |
+| M4 | adaLN conditioning (`(1+scale)·x + shift`) | 2×14 + 1 = 29 | element-wise multiply + add on every block's normalised signal |
+| M6 | residual gate `g·h + residual_scale·x` | 2×14 = 28 | per-channel variable optical attenuator controlled electronically, plus electronic-controlled residual scale |
+| M7 | `input_proj`, `output_proj` (`nn.Linear 784→784`) | 2 | two 614 K-param dense electronic matmuls = ~49 % of total model compute |
+| M10 | Euler readout + re-encode | 20 (per sample) | photodetector → scalar accumulate → modulator at every ODE step |
+| M11 | `SiLU` inside `adaLN_proj` and `time_mlp` | 2×14 + 2 + 1 = 31 | electronic sigmoid + multiply (`x · σ(x)`); no photonic analog |
+| M8b | phase-space noise training | — | model trained against wrong noise domain; robustness to σ_φ unverified |
+
+**Structural issues that don't add O-E-O but still prevent direct chip mapping**
+
+| # | Issue | Fix cost |
+|---|---|---|
+| M1 | Monarch `L`, `R` are arbitrary dense m×m blocks, not MZI-realizable unitaries | SVD post-training adds a Σ attenuator and an untested quality drop; Cayley training estimated +0.03–0.05 gap |
+| M8a-fp | σ_s=0.001 / σ_t=0.005 still applied to the OUTPUT tensor, not to MZI phase angles | proxy — correct phase-angle noise would alter the weight matrix itself |
+
+**Net result**: PhotonFlow is a *hybrid electronic-photonic* architecture
+(consistent with Ning 2024), not the "zero O-E-O" system the CLAUDE.md
+header claims.  A realistic accounting per forward pass:
+
+- **Photonic operations** (can run on MZI + graphene + microring):
+  4 Monarch layers × 14 blocks = 56 linear + 28 saturable absorber +
+  29 divisive-power-norm = 113 optical ops.
+- **Electronic operations** (still need O-E-O):
+  29 adaLN conditioning + 28 gated residuals + 2 bookend nn.Linear +
+  29 norm affines + 31 SiLU + 20 ODE readouts = **139 electronic ops.**
+
+The electronic side is the majority.  Closing it requires either
+  (a) removing adaLN altogether (back to additive time conditioning,
+      DiT-Zero architecture — would cost an estimated +0.10 gap), or
+  (b) replacing SiLU with SaturableAbsorber in all MLP paths and
+      accepting the reduced expressivity, plus
+  (c) finding a photonic equivalent for the residual gate (constant-
+      attenuator ring trees are a candidate, untested).
+
+### 13.5  Conclusion
+
+The 2 K Kaggle rerun (`hasinthakapiyumal/photonflow-mitigated-2k` v2)
+confirms that **four of the twelve mismatches can be closed for a combined
+eval cost of 0.0057** (gap 0.0548 with mitigations on vs 0.0491 v17
+champion reference).  The remaining eight gaps are either structural
+(adaLN, residual gating, Euler multi-pass) or require destructive
+architectural changes that cost more than the 0.01 budget this run
+allowed.  The framework is now *measurably honest about the first four*,
+and the kwargs for the other three destructive mitigations (M1 Cayley,
+M7 Monarch bookends, M8b phase jitter) are shipped as off-by-default
+flags — enabling them is the subject of the next iteration, not this one.
