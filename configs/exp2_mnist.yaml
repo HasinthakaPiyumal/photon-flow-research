@@ -72,12 +72,12 @@ training:
   # The 2K-step recipe used to verify the v17 champion gap.  Scale up for
   # quality runs (e.g. total_steps=20000 or 200000); keep lr+warmup ratio.
   lr: 1.7e-3                  # v17 winner
-  total_steps: 2000           # gap-reproduction budget
-  warmup_steps: 600           # 30% of 2K -- used in v17 winner
+  total_steps: 200000      # gap-reproduction budget
+  warmup_steps: 1000     # 30% of 2K -- used in v17 winner
   lr_schedule: cosine         # cosine to 0
   grad_clip: 1.0
-  checkpoint_every: 1000
-  sample_every: 500
+  checkpoint_every: 10000
+  sample_every: 5000
   sample_steps: 20
   seed: 42
   # Plain uniform CFM loss (matches baseline; gives directly-comparable numbers)
