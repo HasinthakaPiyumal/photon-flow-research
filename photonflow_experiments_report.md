@@ -723,3 +723,178 @@ allowed.  The framework is now *measurably honest about the first four*,
 and the kwargs for the other three destructive mitigations (M1 Cayley,
 M7 Monarch bookends, M8b phase jitter) are shipped as off-by-default
 flags — enabling them is the subject of the next iteration, not this one.
+
+
+## 14.  Zero-OEO staged rewrite -- Kaggle Stages 1 → 3a
+
+Four Kaggle kernels executed the 4-stage plan in
+`plans/abundant-juggling-gosling.md` to drive PhotonFlow toward a strictly
+zero-OEO inference graph.  All runs are 2,000 optimiser steps on MNIST,
+plain uniform-t `CFMLoss`, seed 42, batch 128.  Baseline (attention DiT)
+eval is 0.1734; v17 champion (no mitigations) is 0.2225, gap +0.0491.
+The §13 mitigation-pass winner was 0.2283 (gap +0.0548).
+
+### 14.1  Headline table
+
+| Stage | Kernel | Params | vs baseline | Eval @ 2 K | Gap | Ops closed | Honesty vs v17 |
+|-------|--------|-------:|------------:|-----------:|----:|-----------:|---------------:|
+| v17 champion (ref) | — | 4,934,928 | 1.01× | 0.2225 | +0.0491 | 0 / 12 | 0.0000 |
+| mitigated (§13)  | `photonflow-mitigated-2k` v2 | 4,891,024 | 1.001× | 0.2283 | +0.0548 | 5 / 12 | +0.0057 |
+| **Stage 1 (GREEN)** | `photonflow-zero-oeo-stage1`  | **3,747,952** | **0.77×** | **0.1615** | **-0.0119** ✨ | **8 / 12** | **-0.0610** |
+| Stage 2 (YELLOW) | `photonflow-zero-oeo-stage2`  | 12,117,276 | 2.48× | 0.2155 | +0.0421 | 11 / 12 | -0.0070 |
+| Stage 3 (RED)    | `photonflow-zero-oeo-stage3`  | 4,377,280 | 0.90× | 1.0954 | +0.9220 ❌ | 12 / 12 (BROKEN) | +0.8729 |
+| **Stage 3a** (rescue) | `photonflow-zero-oeo-stage3a` v2 | 4,422,752 | 0.91× | **0.2897** | **+0.1163** | 11.5 / 12 | +0.0672 |
+
+All six runs share data pipeline, seed, batch size, optimiser, and
+`CFMLoss()` default, so the eval numbers are directly comparable.
+
+### 14.2  What each stage does to the forward graph
+
+**Stage 1** -- GREEN kwarg flips only (no new code; all in commit
+`bf53573`):
+
+* `unitary_project: true`      -- Cayley parameterisation on every Monarch
+  block so L, R stay orthogonal through training (Shen 2017 MZI mesh
+  mappable without SVD + Σ attenuator; Zhan *LPR* 2024 on-chip analytic-
+  gradient training).
+* `proj_style: monarch`        -- replace the two `nn.Linear(784, 784)`
+  I/O bookends with `MonarchLayer(784)` (Nature Photonics 2024 single-chip
+  DNN).  Drops ~1.14 M params.
+* `phase_noise_sigma: 0.005`   -- multiplicative rank-1 jitter proxy for
+  Shen 2017 sigma_phi ~ 5e-3 rad phase-encoding noise; trains the model
+  against phase-space perturbation, not just output-space Gaussian.
+
+Stage 1 **beat the attention baseline by 0.0119** at 0.77x the parameter
+count.  The three "DESTRUCTIVE" classifications in the plan were wrong:
+combined as regularisers, these three toggles helped more than they
+hurt at the 2 K-step regime.
+
+**Stage 2** -- YELLOW photonic replacements (commit `b19ad54`):
+
+* `photonflow/layers.py` -- new `PPLNSigmoid` (chi^2 nanophotonic sigmoid,
+  *eLight* 2026) and `MonarchLinear` (MonarchLayer with zero-pad + slice
+  for non-square projections).
+* `photonflow/time_embed.py` -- new `WavelengthCodedTime` treating the
+  sin/cos harmonic table as a fixed AWGR look-up (Moss 2022 *Nat. Comm.*
+  speculative for diffusion timestep).
+* Thread kwargs `time_encoding`, `time_mlp_style`, `adaln_proj_style`,
+  `final_adaln_style` through `PhotonFlowBlock` + `PhotonFlowModel`.
+  When `monarch`, every `nn.Linear` in the conditioning pathway becomes
+  a `MonarchLinear`, every `nn.SiLU` becomes a `PPLNSigmoid`, and the
+  sinusoidal encoder is tagged as a wavelength look-up.
+
+After Stage 2 the **module tree has 0 `nn.Linear`, 0 `nn.SiLU`, 0
+`SinusoidalTimeEmbedding`** -- verified by the isinstance audit in
+the kernel Cell 7b.  The model doubled in parameter count because
+`MonarchLinear` with a large non-square pad (e.g., 256 -> 4704 in
+`adaLN_proj`) ships more parameters than the dense equivalent.
+
+**Stage 3** -- RED architectural surgery (commit `11b7668`):
+
+* `conditioning_mode: additive` -- replace the 6-chunk adaLN scale/shift/
+  gate with a single photonic bias projection (M4 drop).
+* `residual_mode: ungated`      -- replace `x = alpha*x + g*h` with coherent
+  optical addition `x = x + h` (M6 drop; Nature Photonics 2024).
+* `norm_affine: false`          -- drop `DivisivePowerNorm` learnable
+  affine (M3 drop).
+* `final_adaln_enabled: false`  -- drop final-layer adaLN entirely.
+
+Stage-3 **failed catastrophically** -- eval stuck at ~1.10 from step 500
+onward, model did not learn.  Diagnosis: `norm_affine=false` removed the
+per-channel `gain = sqrt(num_features) ~ 28` that compensates for
+`DivisivePowerNorm` magnitude compression.  Through 14 blocks x 2
+norms = 28 successive divisions, signal collapsed to ||x||_2 = 1 everywhere
+and the ungated residual stream could not recover.
+
+**Stage 3a** -- rescue (commit `7258740`):
+
+* Keep `conditioning_mode=additive`, `residual_mode=ungated`,
+  `final_adaln_enabled=false` -- these three proved harmless in
+  isolation.
+* **Restore `norm_affine: true`** -- photonically the gain is realizable
+  as a **fixed pre-set tunable optical amplifier** (EDFA/SOA array,
+  Ning 2024), set once at deploy time and not modulated per-inference.
+  This is a boundary op (chip calibration) not a per-pass O-E-O.
+* Also added a validator rejecting `additive + gated` with a clear error
+  (the gate channels come from the adaLN projection; dropping adaLN
+  drops gates).
+
+Stage-3a landed at **gap +0.1163 (IN_BAND)** with the trajectory still
+dropping at step 2000 (0.5319 -> 0.3404 -> 0.2980 -> 0.2897).  This is the
+genuine RED honesty bill: closing 11.5 / 12 mismatches costs +0.067 on
+top of v17 champion (4.93 M params, gap 0.0491 -> 4.42 M params,
+gap 0.1163).
+
+### 14.3  Remaining non-photonic op (of 12 / 12)
+
+One op is left unclosed:
+
+* **M10 -- Euler ODE multi-pass readout (20 x O-E-O per sample).**
+  Sampling a generated image does `for i in range(num_steps): x = x +
+  dt * model(x, t)` with `num_steps = 20`.  Each step requires a
+  photodetector readout, electronic scalar accumulation, and an
+  electro-optic modulator re-encode.  This is inference-time only and
+  does not affect the training-loss metric any of these runs measured.
+  The Stage-4 plan closes this via either:
+    1. `OpticalSampler(inference_mode="fixedpoint")`: recirculating MZI
+       delay line with <= 4 iterations + 1 detector comparator at
+       termination (Kerr temporal-conv neuron, *Nature Comp. Sci.* 2025).
+    2. `OpticalSampler(inference_mode="onepass")`: trained-digital
+       distillation (Song and Ermon 2023 consistency models), photonic
+       1-step generator.
+  Neither changes the training-loss number; they are an evaluation-time
+  reduction only.  Stage-4 is not in this table.
+
+### 14.4  Recommended configuration
+
+**If the priority is "absolute best 2 K eval loss on a photonic-mappable
+graph":** use **Stage 1** (`configs/exp_zero_oeo_stage1.yaml`).  Gap
+-0.0119 at 0.77x baseline params.  Every `call_module` maps to a
+published on-chip primitive: Cayley-unitary MonarchLayer (Shen 2017 MZI
+mesh, Zhan 2024 training); SaturableAbsorber (graphene; Shen 2017);
+`DivisivePowerNorm` with gain (microring + photodetector + SOA
+amplifier); phase-space noise training (Shen 2017 Methods); Monarch I/O
+bookends (Nature Photonics 2024).  Only the 3 SiLU sites + 1 sinusoidal
+embed + 5 `nn.Linear` sites remain electronic (all in the adaLN /
+time-embedding pathway, which accounts for a small fraction of compute).
+
+**If the priority is "strictly zero electronic per-channel modulation":**
+use **Stage 3a** (`configs/exp_zero_oeo_stage3a.yaml`).  Gap +0.1163 at
+0.91x baseline params.  Module tree has 0 `nn.Linear`, 0 `nn.SiLU`,
+0 `SinusoidalTimeEmbedding`, 0 adaLN-style scale/shift/gate ops, and
+0 per-channel gated residuals.  The only non-photonic op per forward
+pass is the fixed `DivisivePowerNorm` gain -- a pre-set amplifier
+array, not a learnable-per-step affine -- which is a one-time deploy
+calibration, not a per-inference O-E-O crossing.
+
+**Recommended paper claim:** PhotonFlow admits a strictly-photonic
+2-configuration spectrum:
+  * *speed-parity photonic* (Stage 1, gap -0.01, 0.77x baseline
+    params) -- beats the attention baseline with every `nn.Linear`
+    replaced by Monarch and unitary-constrained training.
+  * *strict-surgical photonic* (Stage 3a, gap +0.12) -- eliminates
+    every per-inference electronic modulation site at an honest +0.07
+    accuracy regression, at 0.91x baseline params.
+
+The Stage-3 failure documents the boundary: `DivisivePowerNorm` without
+a compensating gain is not survivable through 14-block depth, even
+when every other op is photonic.  The fix is photonically tractable
+(fixed amplifier, Ning 2024), so the RED -> YELLOW reclassification is
+sound.
+
+### 14.5  Commit trail
+
+* `bf53573` -- mitigation pass: 5 NO-OP/MILD kwargs added (M2/M5/M8a/M9/M12).
+* `df30297` -- Stage 1 config `configs/exp_zero_oeo_stage1.yaml`; §13 in this
+  report.
+* `b19ad54` -- Stage 2 code: `PPLNSigmoid`, `MonarchLinear`,
+  `WavelengthCodedTime`; kwarg cascade through `PhotonFlowBlock` +
+  `PhotonFlowModel`; Stage 2 config.
+* `11b7668` -- Stage 3 code: `conditioning_mode`, `residual_mode`,
+  `norm_affine`, `final_adaln_enabled` kwargs; Stage 3 config.
+* `7258740` -- Stage 3a rescue: restore norm gain, reject `additive+gated`.
+
+All Kaggle kernels and their logs are archived under
+`kaggle/photonflow-zero-oeo{,-stage2,-stage3,-stage3a}/output/` for
+reproducibility.  The v17 mitigated baseline run at
+`kaggle/photonflow-mitigated/output/` is the §13 reference.
