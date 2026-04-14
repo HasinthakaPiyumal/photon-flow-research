@@ -339,6 +339,10 @@ class PhotonFlowBlock(nn.Module):
         block_index: int = 0,                              # M12 / stage indexing
         # --- Stage-2 zero-OEO kwarg: photonicise adaLN_proj ---
         adaln_proj_style: str = "dense",                   # "dense" | "monarch"
+        # --- Stage-3 zero-OEO kwargs: architectural surgery (RED) ---
+        conditioning_mode: str = "adaln",                  # "adaln" | "additive"
+        residual_mode: str = "gated",                      # "gated" | "ungated"
+        norm_affine: bool = True,                          # DivisivePowerNorm `learnable` flag
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -360,6 +364,18 @@ class PhotonFlowBlock(nn.Module):
                 f"adaln_proj_style must be 'dense' or 'monarch', got {adaln_proj_style!r}"
             )
         self.adaln_proj_style = adaln_proj_style
+        # Stage-3 architectural-surgery flags
+        if conditioning_mode not in ("adaln", "additive"):
+            raise ValueError(
+                f"conditioning_mode must be 'adaln' or 'additive', got {conditioning_mode!r}"
+            )
+        if residual_mode not in ("gated", "ungated"):
+            raise ValueError(
+                f"residual_mode must be 'gated' or 'ungated', got {residual_mode!r}"
+            )
+        self.conditioning_mode = conditioning_mode
+        self.residual_mode = residual_mode
+        self.norm_affine = bool(norm_affine)
         # Each block owns TWO Monarch pairs (sub-layer 1 + sub-layer 2) and
         # therefore TWO noise modules.  The cumulative-loss stage indices for
         # this block are (2*block_index, 2*block_index + 1).
@@ -396,10 +412,23 @@ class PhotonFlowBlock(nn.Module):
         # parameter count to (time_dim + 6*dim) * adaln_bottleneck + 6*dim.
         # Empirically (this sprint) 64-128 is enough bottleneck -- adaLN
         # gate/shift/scale are low-rank signals over time.
+        # Stage-3: in "additive" conditioning mode, the per-dimension adaLN
+        # scale/shift/gate path is replaced by a SINGLE photonic bias vector
+        # added to each sub-layer's normalised features.  No per-channel
+        # modulation, no gates -- everything is coherent optical addition.
+        # cond_bias_proj: (B, time_dim) -> (B, 2*dim) via one MonarchLinear;
+        # sliced into (cond_bias1, cond_bias2) for sub-layers 1 and 2.
+        if self.conditioning_mode == "additive":
+            from photonflow.layers import MonarchLinear
+            _cb_scale = adaln_init_std if adaln_init_std > 0 else 0.02
+            self.cond_bias_proj = MonarchLinear(
+                time_dim, 2 * dim, init_scale=_cb_scale, bias=True
+            )
+            self.adaLN_proj = None
         # Stage-2: when adaln_proj_style="monarch", swap nn.Linear -> MonarchLinear
         # and nn.SiLU -> PPLNSigmoid to make the conditioning pathway photonic.
         # Defaults preserve the legacy dense electronic adaLN_proj.
-        if self.adaln_proj_style == "monarch":
+        elif self.adaln_proj_style == "monarch":
             from photonflow.layers import MonarchLinear, PPLNSigmoid
             if adaln_bottleneck and adaln_bottleneck > 0:
                 # Inner MonarchLinear has small effective output magnitude so
@@ -441,13 +470,20 @@ class PhotonFlowBlock(nn.Module):
         # gate_init writes directly to the final layer's bias buffer.  This
         # works for both nn.Linear (legacy) and MonarchLinear (Stage 2) because
         # MonarchLinear was given an nn.Linear-compatible (out_dim,) bias above.
-        if gate_init > 0:
+        # Skipped in Stage-3 "additive" mode, which has no gate channels at all.
+        if gate_init > 0 and self.adaLN_proj is not None:
             with torch.no_grad():
                 self.adaLN_proj[-1].bias[2 * dim : 3 * dim].fill_(gate_init)
                 self.adaLN_proj[-1].bias[5 * dim : 6 * dim].fill_(gate_init)
 
         # --- Sub-layer 1: Spatial mixing ---
-        self.norm1 = DivisivePowerNorm(num_features=dim, mean_center=self.mean_center_norm)
+        # Stage 3: when norm_affine=False, DivisivePowerNorm drops its electronic
+        # learnable gain+bias (M3).  `learnable=False` was already supported.
+        self.norm1 = DivisivePowerNorm(
+            num_features=dim,
+            mean_center=self.mean_center_norm,
+            learnable=self.norm_affine,
+        )
         _monarch_kwargs = dict(
             init=monarch_init,
             num_factors=num_monarch_factors,
@@ -491,7 +527,11 @@ class PhotonFlowBlock(nn.Module):
         # --- Sub-layer 2: "MLP" (Monarch-Absorber-Monarch, photonic FFN) ---
         # Mirrors standard MLP: Linear -> Activation -> Linear
         # MonarchL2 -> Absorber2 -> MonarchR2
-        self.norm2 = DivisivePowerNorm(num_features=dim, mean_center=self.mean_center_norm)
+        self.norm2 = DivisivePowerNorm(
+            num_features=dim,
+            mean_center=self.mean_center_norm,
+            learnable=self.norm_affine,
+        )
         self.monarch_l2 = MonarchLayer(dim, **_monarch_kwargs)
         self.absorber2 = SaturableAbsorber(
             alpha=self.absorber_alpha,
@@ -510,18 +550,24 @@ class PhotonFlowBlock(nn.Module):
         Returns:
             (B, dim) output features.
         """
-        # --- 6 conditioning vectors from time embedding ---
-        cond = self.adaLN_proj(t_emb)  # (B, 6*dim)
-        s1, sh1, g1, s2, sh2, g2 = cond.chunk(6, dim=-1)  # each (B, dim)
+        # --- Conditioning path ---
+        # Stage-3 "additive": single photonic bias proj (B, 2*dim) -> (cb1, cb2)
+        #                     no per-dim scale/shift/gate.
+        # Otherwise: legacy adaLN-Zero with 6 chunks (scale/shift/gate x 2).
+        if self.conditioning_mode == "additive":
+            cb = self.cond_bias_proj(t_emb)  # (B, 2*dim)
+            cb1, cb2 = cb.chunk(2, dim=-1)
+            s1 = sh1 = g1 = s2 = sh2 = g2 = None  # unused in additive path
+        else:
+            cond = self.adaLN_proj(t_emb)  # (B, 6*dim)
+            s1, sh1, g1, s2, sh2, g2 = cond.chunk(6, dim=-1)  # each (B, dim)
 
         # --- Sub-layer 1: Spatial mixing ---
         # MonarchL → MonarchR → absorber → noise (at readout, post-nonlinearity)
-        # Noise AFTER absorber matches photonic hardware: shot + thermal noise
-        # appear at the photodetector READOUT (after graphene absorber nonlinearity),
-        # not between MZI columns. This also prevents the absorber's tanh from
-        # distorting noise distribution and attenuating noise gradients
-        # (StrC-ONN 2025: noise accumulates along forward path — minimize injections).
-        h = (1 + s1) * self.norm1(x) + sh1
+        if self.conditioning_mode == "additive":
+            h = self.norm1(x) + cb1                           # no per-dim scale
+        else:
+            h = (1 + s1) * self.norm1(x) + sh1
         if self.use_two_axis:
             B = h.shape[0]
             h = h.reshape(B, self.seq_dim, self.feat_dim)           # (B, S, F)
@@ -536,17 +582,28 @@ class PhotonFlowBlock(nn.Module):
         h = self.absorber1(h)
         if self.noise1 is not None:
             h = self.noise1(h)      # Shot + thermal noise at photodetector readout
-        x = self.residual_scale * x + g1 * h
+        # Stage-3: residual_mode="ungated" is coherent optical addition
+        # (Nature Photonics 2024 tunable directional coupler); no per-channel gate.
+        if self.residual_mode == "ungated":
+            x = x + h
+        else:
+            x = self.residual_scale * x + g1 * h
 
         # --- Sub-layer 2: "MLP" (nonlinear feature transform) ---
         # MonarchL2 → Absorber2 → MonarchR2 = second MZI mesh → noise at output
-        h = (1 + s2) * self.norm2(x) + sh2
+        if self.conditioning_mode == "additive":
+            h = self.norm2(x) + cb2
+        else:
+            h = (1 + s2) * self.norm2(x) + sh2
         h = self.monarch_l2(h)
         h = self.absorber2(h)
         h = self.monarch_r2(h)
         if self.noise2 is not None:
             h = self.noise2(h)      # Shot + thermal noise at MZI mesh output
-        x = self.residual_scale * x + g2 * h
+        if self.residual_mode == "ungated":
+            x = x + h
+        else:
+            x = self.residual_scale * x + g2 * h
 
         return x
 
@@ -634,6 +691,11 @@ class PhotonFlowModel(nn.Module):
         time_mlp_style: str = "dense",                     # "dense" | "monarch"
         adaln_proj_style: str = "dense",                   # "dense" | "monarch" (per-block)
         final_adaln_style: str = "dense",                  # "dense" | "monarch"
+        # --- Stage-3 zero-OEO kwargs (architectural surgery, RED) ---
+        conditioning_mode: str = "adaln",                  # "adaln" | "additive"
+        residual_mode: str = "gated",                      # "gated" | "ungated"
+        norm_affine: bool = True,                          # DivisivePowerNorm `learnable`
+        final_adaln_enabled: bool = True,                  # False => drop final_adaLN
     ) -> None:
         super().__init__()
         # Validate hidden_dim is a perfect square
@@ -671,6 +733,19 @@ class PhotonFlowModel(nn.Module):
         self.time_mlp_style = time_mlp_style
         self.adaln_proj_style = adaln_proj_style
         self.final_adaln_style = final_adaln_style
+        # --- Stage-3 settings ---
+        if conditioning_mode not in ("adaln", "additive"):
+            raise ValueError(
+                f"conditioning_mode must be 'adaln' or 'additive', got {conditioning_mode!r}"
+            )
+        if residual_mode not in ("gated", "ungated"):
+            raise ValueError(
+                f"residual_mode must be 'gated' or 'ungated', got {residual_mode!r}"
+            )
+        self.conditioning_mode = conditioning_mode
+        self.residual_mode = residual_mode
+        self.norm_affine = bool(norm_affine)
+        self.final_adaln_enabled = bool(final_adaln_enabled)
 
         # --- Input / output projections ---
         # Default: dense nn.Linear (legacy + electronic boundary).
@@ -775,6 +850,10 @@ class PhotonFlowModel(nn.Module):
                 block_index=i,
                 # --- Stage-2 zero-OEO kwargs ---
                 adaln_proj_style=adaln_proj_style,
+                # --- Stage-3 zero-OEO kwargs ---
+                conditioning_mode=conditioning_mode,
+                residual_mode=residual_mode,
+                norm_affine=norm_affine,
             )
             for i in range(num_blocks)
         ])
@@ -784,8 +863,17 @@ class PhotonFlowModel(nn.Module):
         # before the output projection. This enables time-dependent output scaling.
         # Stage 2: when final_adaln_style="monarch", swap nn.SiLU + nn.Linear for
         # PPLNSigmoid + MonarchLinear so the final-layer conditioning is photonic.
-        self.final_norm = DivisivePowerNorm(num_features=hidden_dim, mean_center=mean_center_norm)
-        if self.final_adaln_style == "monarch":
+        # Stage 3: when final_adaln_enabled=False, drop final_adaLN entirely --
+        # the final layer becomes norm -> output_proj with no time conditioning
+        # at the output stage (consistent with the Stage-3 RED surgery).
+        self.final_norm = DivisivePowerNorm(
+            num_features=hidden_dim,
+            mean_center=mean_center_norm,
+            learnable=self.norm_affine,
+        )
+        if not self.final_adaln_enabled:
+            self.final_adaLN = None
+        elif self.final_adaln_style == "monarch":
             from photonflow.layers import MonarchLinear, PPLNSigmoid
             self.final_adaLN = nn.Sequential(
                 PPLNSigmoid(beta=1.0),
@@ -821,10 +909,15 @@ class PhotonFlowModel(nn.Module):
         for block in self.blocks:
             x = block(x, t_emb)
 
-        # Final layer: norm + adaLN conditioning + output projection
+        # Final layer: norm + (optional) adaLN conditioning + output projection
         x = self.final_norm(x)
-        shift, scale = self.final_adaLN(t_emb).chunk(2, dim=-1)
-        x = (1 + scale) * x + shift
+        # Stage-3: when final_adaLN was disabled, skip the per-channel shift+scale.
+        # When residual_mode="ungated" / conditioning_mode="additive" the
+        # semantics are "no electronic per-channel modulation at the output
+        # stage either"; final_adaLN is expected to be None.
+        if self.final_adaLN is not None:
+            shift, scale = self.final_adaLN(t_emb).chunk(2, dim=-1)
+            x = (1 + scale) * x + shift
         return self.output_proj(x)
 
     def extra_repr(self) -> str:
