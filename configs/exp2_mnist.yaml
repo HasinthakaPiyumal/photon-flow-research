@@ -73,7 +73,7 @@ training:
   # quality runs (e.g. total_steps=20000 or 200000); keep lr+warmup ratio.
   lr: 1.7e-3                  # v17 winner
   total_steps: 200000      # gap-reproduction budget
-  warmup_steps: 1000     # 30% of 2K -- used in v17 winner
+  warmup_steps: 600     # 30% of 2K -- used in v17 winner
   lr_schedule: cosine         # cosine to 0
   grad_clip: 1.0
   checkpoint_every: 10000
