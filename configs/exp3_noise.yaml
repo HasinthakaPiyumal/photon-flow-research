@@ -25,9 +25,11 @@ model:
   noise_warmup_schedule: cosine  # cosine ramp (smoother than linear at boundary)
   noise_augment_k: 2             # Average gradient over K noise realizations per step
   gate_init: 0.1
-  depth_decay_residual: true
-  adaln_init_std: 0.02
-  num_monarch_factors: 2
+  # MUST match exp2's ACTUAL values (not its config — exp2 notebook ignores these)
+  # Controlled experiment: noise is the ONLY variable
+  depth_decay_residual: false   # exp2 default (notebook doesn't read config)
+  adaln_init_std: 0.0           # exp2 default (pure adaLN-Zero)
+  num_monarch_factors: 1        # exp2 default (single Monarch factor)
 
 data:
   dataset: mnist
