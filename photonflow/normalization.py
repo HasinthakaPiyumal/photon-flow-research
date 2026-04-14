@@ -120,6 +120,7 @@ class DivisivePowerNorm(nn.Module):
         dim: int = -1,
         num_features: int = None,
         learnable: bool = True,
+        mean_center: bool = False,
     ) -> None:
         super().__init__()
         if eps <= 0:
@@ -127,6 +128,12 @@ class DivisivePowerNorm(nn.Module):
         self.eps = eps
         self.dim = dim
         self.num_features = num_features
+        # When True, subtract per-sample mean before divisive normalisation —
+        # makes the layer behave like RMSNorm+LayerNorm hybrid. Default False
+        # (preserves photonic-hardware-compatible divisive-only form). Enabling
+        # it requires one extra electronic operation at the optical-electronic
+        # boundary (measure + subtract DC); kept off-chip-compatible.
+        self.mean_center = mean_center
 
         # Learnable affine parameters (electronic post-processing)
         # gain is initialized to sqrt(num_features) to compensate for the
@@ -156,6 +163,12 @@ class DivisivePowerNorm(nn.Module):
             Tensor of the same shape as x. Each slice along self.dim has
             L2 norm approximately equal to 1.0 (before affine transform).
         """
+        # Optional mean centering (LayerNorm-style DC removal).
+        # Kept off by default for photonic compatibility; turned on via kwarg
+        # when we want to ablate the impact of DC drift across blocks.
+        if self.mean_center:
+            x = x - x.mean(dim=self.dim, keepdim=True)
+
         # Compute L2 norm along the feature dimension.
         # keepdim=True so we can broadcast-divide without reshaping.
         norm = torch.norm(x, p=2, dim=self.dim, keepdim=True)
@@ -173,6 +186,8 @@ class DivisivePowerNorm(nn.Module):
         s = f"eps={self.eps}, dim={self.dim}"
         if self.num_features is not None:
             s += f", num_features={self.num_features}, affine=True"
+        if self.mean_center:
+            s += ", mean_center=True"
         return s
 
 

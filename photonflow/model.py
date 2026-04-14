@@ -253,9 +253,14 @@ class PhotonFlowBlock(nn.Module):
         residual_scale: float = 1.0,
         adaln_init_std: float = 0.0,
         num_monarch_factors: int = 1,
+        absorber_alpha: float = 0.8,
+        mean_center_norm: bool = False,
     ) -> None:
         super().__init__()
         self.dim = dim
+        # Architecture-experiment kwargs (used when building norm/absorber below)
+        self.absorber_alpha = absorber_alpha
+        self.mean_center_norm = mean_center_norm
         # Depth-decayed residual (Wang et al. "Residual Connections Harm
         # Generative Representation Learning," ICLR 2025):
         # y = alpha_d * x + f(x) where alpha_d decreases with depth.
@@ -295,14 +300,14 @@ class PhotonFlowBlock(nn.Module):
                 self.adaLN_proj[-1].bias[5 * dim : 6 * dim].fill_(gate_init)
 
         # --- Sub-layer 1: Spatial mixing ---
-        self.norm1 = DivisivePowerNorm(num_features=dim)
+        self.norm1 = DivisivePowerNorm(num_features=dim, mean_center=self.mean_center_norm)
         if self.use_two_axis:
             self.monarch_spatial_l = MonarchLayer(seq_dim, init=monarch_init, num_factors=num_monarch_factors)
             self.monarch_spatial_r = MonarchLayer(seq_dim, init=monarch_init, num_factors=num_monarch_factors)
         else:
             self.monarch_l = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
             self.monarch_r = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
-        self.absorber1 = SaturableAbsorber()
+        self.absorber1 = SaturableAbsorber(alpha=self.absorber_alpha)
 
         # --- Photonic noise injection (training only) ---
         # Each Monarch pair (L→R) maps to ONE MZI mesh on chip.
@@ -325,9 +330,9 @@ class PhotonFlowBlock(nn.Module):
         # --- Sub-layer 2: "MLP" (Monarch-Absorber-Monarch, photonic FFN) ---
         # Mirrors standard MLP: Linear -> Activation -> Linear
         # MonarchL2 -> Absorber2 -> MonarchR2
-        self.norm2 = DivisivePowerNorm(num_features=dim)
+        self.norm2 = DivisivePowerNorm(num_features=dim, mean_center=self.mean_center_norm)
         self.monarch_l2 = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
-        self.absorber2 = SaturableAbsorber()
+        self.absorber2 = SaturableAbsorber(alpha=self.absorber_alpha)
         self.monarch_r2 = MonarchLayer(dim, init=monarch_init, num_factors=num_monarch_factors)
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
@@ -446,6 +451,8 @@ class PhotonFlowModel(nn.Module):
         depth_decay_residual: bool = False,
         adaln_init_std: float = 0.0,
         num_monarch_factors: int = 1,
+        absorber_alpha: float = 0.8,
+        mean_center_norm: bool = False,
     ) -> None:
         super().__init__()
         # Validate hidden_dim is a perfect square
@@ -505,6 +512,8 @@ class PhotonFlowModel(nn.Module):
                 ),
                 adaln_init_std=adaln_init_std,
                 num_monarch_factors=num_monarch_factors,
+                absorber_alpha=absorber_alpha,
+                mean_center_norm=mean_center_norm,
             )
             for i in range(num_blocks)
         ])
@@ -512,7 +521,7 @@ class PhotonFlowModel(nn.Module):
         # --- Final layer: norm + adaLN + output projection (DiT FinalLayer) ---
         # DiT applies a final 2-vector adaLN (shift+scale from time embedding)
         # before the output projection. This enables time-dependent output scaling.
-        self.final_norm = DivisivePowerNorm(num_features=hidden_dim)
+        self.final_norm = DivisivePowerNorm(num_features=hidden_dim, mean_center=mean_center_norm)
         self.final_adaLN = nn.Sequential(
             nn.SiLU(),
             nn.Linear(time_dim, 2 * hidden_dim),
