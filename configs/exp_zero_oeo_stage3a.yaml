@@ -1,0 +1,95 @@
+# exp_zero_oeo_stage3a.yaml
+# PhotonFlow Stage-3a: RESCUED Stage-3 with norm_affine=True.
+#
+# Stage-3 failed catastrophically on Kaggle (gap +0.92, model didn't learn)
+# because `norm_affine=False` removed the per-channel gain=sqrt(num_features)
+# that compensates DivisivePowerNorm's magnitude compression.  Through 14
+# blocks x 2 norms, signal collapses to ||x||_2 = 1 everywhere and the
+# residual stream can't recover.
+#
+# Stage-3a keeps M4 (adaLN drop), M6 (gate drop), and final-adaLN drop,
+# but puts the normalization gain back.  This partially closes M3 -- the
+# GAIN can be photonically realized as a fixed pre-set tunable optical
+# amplifier per channel (EDFA/SOA array), set once and left alone.  It is
+# NOT dynamically modulated at inference time.  M3's "electronic affine"
+# characterization is therefore relaxed: a FIXED gain is photonically
+# realizable; only a DYNAMIC learned-during-run gain+bias is not.
+#
+# Running as a separate 4-column Kaggle kernel to get the actual loss.
+# Predicted gap: somewhere between Stage-2 (+0.042) and Stage-3 (+0.92).
+
+experiment:
+  name: exp_zero_oeo_stage3a
+  description: "PhotonFlow Stage-3a: RED surgery EXCEPT keep norm gain (M3 relaxed to fixed amplifier)"
+
+model:
+  type: photonflow
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 14
+  time_dim: 256
+  gate_init: 0.5                 # not used when conditioning_mode=additive
+  adaln_init_std: 0.02
+  adaln_bottleneck: 8
+  num_monarch_factors: 1
+  monarch_init: random
+  depth_decay_residual: false
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: false
+  mean_center_norm: false
+
+  # --- Stage-0 mitigations ---
+  use_noise: true
+  sigma_s: 0.001
+  sigma_t: 0.005
+  shot_signal_dependent: true
+  absorber_intensity_mode: differential
+  cumulative_loss_db_per_stage: 0.0003
+  monarch_bias: false
+
+  # --- Stage-1 GREEN kwargs ---
+  unitary_project: true
+  proj_style: monarch
+  phase_noise_sigma: 0.005
+
+  # --- Stage-2 YELLOW kwargs ---
+  time_encoding: wavelength
+  time_mlp_style: monarch
+  adaln_proj_style: monarch
+  final_adaln_style: monarch
+
+  # --- Stage-3 RED kwargs (norm_affine RESTORED, others surgical) ---
+  conditioning_mode: additive    # M4: drop per-dim scale/shift ops
+  residual_mode: ungated         # M6: drop per-channel gate multiplies
+  norm_affine: true              # M3 PARTIAL: keep gain (photonically fixed amplifier)
+  final_adaln_enabled: false
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 2000
+  warmup_steps: 600
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 1000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_zero_oeo_stage3a

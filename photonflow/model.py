@@ -373,6 +373,14 @@ class PhotonFlowBlock(nn.Module):
             raise ValueError(
                 f"residual_mode must be 'gated' or 'ungated', got {residual_mode!r}"
             )
+        # Validation: gated residuals require adaLN conditioning (the gates
+        # come from the 6-chunk adaLN projection).  additive + gated would
+        # need a separate gate projection -- not supported.
+        if conditioning_mode == "additive" and residual_mode == "gated":
+            raise ValueError(
+                "conditioning_mode='additive' implies no per-dim gates; "
+                "use residual_mode='ungated' (or pick conditioning_mode='adaln')"
+            )
         self.conditioning_mode = conditioning_mode
         self.residual_mode = residual_mode
         self.norm_affine = bool(norm_affine)
