@@ -289,6 +289,7 @@ class PhotonFlowBlock(nn.Module):
         mean_center_norm: bool = False,
         learnable_absorber_alpha: bool = False,
         absorber_leaky_slope: float = 0.0,
+        adaln_bottleneck: int = 0,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -320,10 +321,26 @@ class PhotonFlowBlock(nn.Module):
         # adaLN-Zero (Peebles 2023): zero-init so blocks start as identity.
         # adaLN-Gaussian ("Unveiling the Secret of AdaLN-Zero," OpenReview 2024):
         # small Gaussian init (std=0.02) slightly outperforms zero-init (~2% FID).
-        self.adaLN_proj = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(time_dim, 6 * dim),
-        )
+        #
+        # Parameter-budget note: for large dim, the Linear(time_dim, 6*dim) is the
+        # dominant per-block cost (e.g. dim=784 -> 1.2 M params per block, 87 %
+        # of per-block total).  When `adaln_bottleneck > 0`, the projection is
+        # refactored as time_dim -> adaln_bottleneck -> 6*dim, cutting the
+        # parameter count to (time_dim + 6*dim) * adaln_bottleneck + 6*dim.
+        # Empirically (this sprint) 64-128 is enough bottleneck -- adaLN
+        # gate/shift/scale are low-rank signals over time.
+        if adaln_bottleneck and adaln_bottleneck > 0:
+            self.adaLN_proj = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(time_dim, adaln_bottleneck),
+                nn.SiLU(),
+                nn.Linear(adaln_bottleneck, 6 * dim),
+            )
+        else:
+            self.adaLN_proj = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(time_dim, 6 * dim),
+            )
         if adaln_init_std > 0:
             nn.init.normal_(self.adaLN_proj[-1].weight, std=adaln_init_std)
         else:
@@ -499,6 +516,7 @@ class PhotonFlowModel(nn.Module):
         mean_center_norm: bool = False,
         learnable_absorber_alpha: bool = False,
         absorber_leaky_slope: float = 0.0,
+        adaln_bottleneck: int = 0,
     ) -> None:
         super().__init__()
         # Validate hidden_dim is a perfect square
@@ -562,6 +580,7 @@ class PhotonFlowModel(nn.Module):
                 mean_center_norm=mean_center_norm,
                 learnable_absorber_alpha=learnable_absorber_alpha,
                 absorber_leaky_slope=absorber_leaky_slope,
+                adaln_bottleneck=adaln_bottleneck,
             )
             for i in range(num_blocks)
         ])
