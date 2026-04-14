@@ -337,6 +337,8 @@ class PhotonFlowBlock(nn.Module):
         phase_noise_sigma: float = 0.0,                    # M8b
         cumulative_loss_db_per_stage: float = 0.0,         # M12
         block_index: int = 0,                              # M12 / stage indexing
+        # --- Stage-2 zero-OEO kwarg: photonicise adaLN_proj ---
+        adaln_proj_style: str = "dense",                   # "dense" | "monarch"
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -352,6 +354,12 @@ class PhotonFlowBlock(nn.Module):
         self.phase_noise_sigma = float(phase_noise_sigma)
         self.cumulative_loss_db_per_stage = float(cumulative_loss_db_per_stage)
         self.block_index = int(block_index)
+        # Stage-2 photonicisation flag
+        if adaln_proj_style not in ("dense", "monarch"):
+            raise ValueError(
+                f"adaln_proj_style must be 'dense' or 'monarch', got {adaln_proj_style!r}"
+            )
+        self.adaln_proj_style = adaln_proj_style
         # Each block owns TWO Monarch pairs (sub-layer 1 + sub-layer 2) and
         # therefore TWO noise modules.  The cumulative-loss stage indices for
         # this block are (2*block_index, 2*block_index + 1).
@@ -388,24 +396,51 @@ class PhotonFlowBlock(nn.Module):
         # parameter count to (time_dim + 6*dim) * adaln_bottleneck + 6*dim.
         # Empirically (this sprint) 64-128 is enough bottleneck -- adaLN
         # gate/shift/scale are low-rank signals over time.
-        if adaln_bottleneck and adaln_bottleneck > 0:
-            self.adaLN_proj = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(time_dim, adaln_bottleneck),
-                nn.SiLU(),
-                nn.Linear(adaln_bottleneck, 6 * dim),
-            )
+        # Stage-2: when adaln_proj_style="monarch", swap nn.Linear -> MonarchLinear
+        # and nn.SiLU -> PPLNSigmoid to make the conditioning pathway photonic.
+        # Defaults preserve the legacy dense electronic adaLN_proj.
+        if self.adaln_proj_style == "monarch":
+            from photonflow.layers import MonarchLinear, PPLNSigmoid
+            if adaln_bottleneck and adaln_bottleneck > 0:
+                # Inner MonarchLinear has small effective output magnitude so
+                # adaLN-Zero's near-identity-at-init geometry is preserved.
+                _ada_init_scale = adaln_init_std if adaln_init_std > 0 else 0.02
+                self.adaLN_proj = nn.Sequential(
+                    PPLNSigmoid(beta=1.0),
+                    MonarchLinear(time_dim, adaln_bottleneck, init_scale=0.1, bias=True),
+                    PPLNSigmoid(beta=1.0),
+                    MonarchLinear(adaln_bottleneck, 6 * dim,
+                                  init_scale=_ada_init_scale, bias=True),
+                )
+            else:
+                _ada_init_scale = adaln_init_std if adaln_init_std > 0 else 0.02
+                self.adaLN_proj = nn.Sequential(
+                    PPLNSigmoid(beta=1.0),
+                    MonarchLinear(time_dim, 6 * dim,
+                                  init_scale=_ada_init_scale, bias=True),
+                )
         else:
-            self.adaLN_proj = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(time_dim, 6 * dim),
-            )
-        if adaln_init_std > 0:
-            nn.init.normal_(self.adaLN_proj[-1].weight, std=adaln_init_std)
-        else:
-            nn.init.zeros_(self.adaLN_proj[-1].weight)
-        nn.init.zeros_(self.adaLN_proj[-1].bias)
+            if adaln_bottleneck and adaln_bottleneck > 0:
+                self.adaLN_proj = nn.Sequential(
+                    nn.SiLU(),
+                    nn.Linear(time_dim, adaln_bottleneck),
+                    nn.SiLU(),
+                    nn.Linear(adaln_bottleneck, 6 * dim),
+                )
+            else:
+                self.adaLN_proj = nn.Sequential(
+                    nn.SiLU(),
+                    nn.Linear(time_dim, 6 * dim),
+                )
+            if adaln_init_std > 0:
+                nn.init.normal_(self.adaLN_proj[-1].weight, std=adaln_init_std)
+            else:
+                nn.init.zeros_(self.adaLN_proj[-1].weight)
+            nn.init.zeros_(self.adaLN_proj[-1].bias)
 
+        # gate_init writes directly to the final layer's bias buffer.  This
+        # works for both nn.Linear (legacy) and MonarchLinear (Stage 2) because
+        # MonarchLinear was given an nn.Linear-compatible (out_dim,) bias above.
         if gate_init > 0:
             with torch.no_grad():
                 self.adaLN_proj[-1].bias[2 * dim : 3 * dim].fill_(gate_init)
@@ -594,6 +629,11 @@ class PhotonFlowModel(nn.Module):
         unitary_project: bool = False,                     # M1
         phase_noise_sigma: float = 0.0,                    # M8b
         cumulative_loss_db_per_stage: float = 0.0,         # M12
+        # --- Stage-2 zero-OEO kwargs (Stage-2 of plans/abundant-juggling-gosling.md) ---
+        time_encoding: str = "sinusoidal",                 # "sinusoidal" | "wavelength"
+        time_mlp_style: str = "dense",                     # "dense" | "monarch"
+        adaln_proj_style: str = "dense",                   # "dense" | "monarch" (per-block)
+        final_adaln_style: str = "dense",                  # "dense" | "monarch"
     ) -> None:
         super().__init__()
         # Validate hidden_dim is a perfect square
@@ -607,6 +647,15 @@ class PhotonFlowModel(nn.Module):
             raise ValueError(
                 f"proj_style must be 'dense' or 'monarch', got {proj_style!r}"
             )
+        for kw, name in [
+            (time_encoding, "time_encoding"),
+            (time_mlp_style, "time_mlp_style"),
+            (adaln_proj_style, "adaln_proj_style"),
+            (final_adaln_style, "final_adaln_style"),
+        ]:
+            allowed = ("sinusoidal", "wavelength") if name == "time_encoding" else ("dense", "monarch")
+            if kw not in allowed:
+                raise ValueError(f"{name} must be one of {allowed}, got {kw!r}")
         self.in_dim = in_dim
         self.hidden_dim = hidden_dim
         self.num_blocks = num_blocks
@@ -617,6 +666,11 @@ class PhotonFlowModel(nn.Module):
         self.unitary_project = unitary_project
         self.phase_noise_sigma = float(phase_noise_sigma)
         self.cumulative_loss_db_per_stage = float(cumulative_loss_db_per_stage)
+        # --- Stage-2 zero-OEO settings (stashed for repr + block wiring) ---
+        self.time_encoding = time_encoding
+        self.time_mlp_style = time_mlp_style
+        self.adaln_proj_style = adaln_proj_style
+        self.final_adaln_style = final_adaln_style
 
         # --- Input / output projections ---
         # Default: dense nn.Linear (legacy + electronic boundary).
@@ -659,15 +713,33 @@ class PhotonFlowModel(nn.Module):
             if self.output_proj.bias is not None:
                 nn.init.zeros_(self.output_proj.bias)
 
-        # --- Time embedding pipeline (electronics-side) ---
+        # --- Time embedding pipeline ---
         # Fixed 256-dim sinusoidal encoding regardless of hidden_dim.
-        # Avoids wasteful high-dim sinusoidal when hidden_dim is large (784).
-        self.time_mlp = nn.Sequential(
-            SinusoidalTimeEmbedding(256),
-            nn.Linear(256, time_dim),
-            nn.SiLU(),
-            nn.Linear(time_dim, time_dim),
-        )
+        # Stage 2: when time_encoding="wavelength", swap SinusoidalTimeEmbedding
+        # for the photonic-tagged WavelengthCodedTime (numerically identical;
+        # AWGR-routed wavelength lookup, see Moss 2022 Nat. Comm.).
+        # When time_mlp_style="monarch", swap SiLU + nn.Linear sites for
+        # PPLNSigmoid + MonarchLinear so the entire MLP runs photonically.
+        if self.time_encoding == "wavelength":
+            from photonflow.time_embed import WavelengthCodedTime
+            _time_emb_cls = WavelengthCodedTime
+        else:
+            _time_emb_cls = SinusoidalTimeEmbedding
+        if self.time_mlp_style == "monarch":
+            from photonflow.layers import MonarchLinear, PPLNSigmoid
+            self.time_mlp = nn.Sequential(
+                _time_emb_cls(256),
+                MonarchLinear(256, time_dim, init_scale=0.1, bias=True),
+                PPLNSigmoid(beta=1.0),
+                MonarchLinear(time_dim, time_dim, init_scale=0.1, bias=True),
+            )
+        else:
+            self.time_mlp = nn.Sequential(
+                _time_emb_cls(256),
+                nn.Linear(256, time_dim),
+                nn.SiLU(),
+                nn.Linear(time_dim, time_dim),
+            )
 
         # --- Photonic blocks ---
         # Depth-decayed residual (Wang et al. ICLR 2025): scale decreases
@@ -701,6 +773,8 @@ class PhotonFlowModel(nn.Module):
                 phase_noise_sigma=phase_noise_sigma,
                 cumulative_loss_db_per_stage=cumulative_loss_db_per_stage,
                 block_index=i,
+                # --- Stage-2 zero-OEO kwargs ---
+                adaln_proj_style=adaln_proj_style,
             )
             for i in range(num_blocks)
         ])
@@ -708,13 +782,24 @@ class PhotonFlowModel(nn.Module):
         # --- Final layer: norm + adaLN + output projection (DiT FinalLayer) ---
         # DiT applies a final 2-vector adaLN (shift+scale from time embedding)
         # before the output projection. This enables time-dependent output scaling.
+        # Stage 2: when final_adaln_style="monarch", swap nn.SiLU + nn.Linear for
+        # PPLNSigmoid + MonarchLinear so the final-layer conditioning is photonic.
         self.final_norm = DivisivePowerNorm(num_features=hidden_dim, mean_center=mean_center_norm)
-        self.final_adaLN = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(time_dim, 2 * hidden_dim),
-        )
-        nn.init.zeros_(self.final_adaLN[-1].weight)
-        nn.init.zeros_(self.final_adaLN[-1].bias)
+        if self.final_adaln_style == "monarch":
+            from photonflow.layers import MonarchLinear, PPLNSigmoid
+            self.final_adaLN = nn.Sequential(
+                PPLNSigmoid(beta=1.0),
+                # Use small init_scale so final-layer adaLN starts near-identity
+                # (mirrors the DiT-style zero-init on the legacy nn.Linear path).
+                MonarchLinear(time_dim, 2 * hidden_dim, init_scale=1e-3, bias=True),
+            )
+        else:
+            self.final_adaLN = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(time_dim, 2 * hidden_dim),
+            )
+            nn.init.zeros_(self.final_adaLN[-1].weight)
+            nn.init.zeros_(self.final_adaLN[-1].bias)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Predict the flow field v_theta(x_t, t) = (x_1 - x_0).

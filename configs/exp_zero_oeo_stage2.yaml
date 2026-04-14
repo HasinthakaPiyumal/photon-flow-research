@@ -1,0 +1,92 @@
+# exp_zero_oeo_stage2.yaml
+# PhotonFlow Stage-2 toward fully photonic (zero-OEO) inference graph.
+#
+# Stage 2 of the 4-stage plan in plans/abundant-juggling-gosling.md:
+#   - All Stage-1 GREEN kwargs PLUS YELLOW photonic replacements:
+#     * time_encoding=wavelength    -- WavelengthCodedTime (Moss 2022 AWGR)
+#     * time_mlp_style=monarch       -- PPLNSigmoid + MonarchLinear in time MLP
+#     * adaln_proj_style=monarch     -- PPLNSigmoid + MonarchLinear in adaLN_proj
+#     * final_adaln_style=monarch    -- PPLNSigmoid + MonarchLinear in final_adaLN
+#   - Removes 31 SiLU activations + sinusoidal generator + 5 nn.Linear sites
+#     from the inference forward graph; ZERO nn.Linear / nn.SiLU /
+#     SinusoidalTimeEmbedding modules remain after this config.
+#
+# Color: YELLOW (PPLN sigmoid is on-chip demonstrated in eLight 2026, but the
+# wavelength-coded time encoding has no end-to-end photonic-generative-model
+# demonstration; MonarchLinear with pad/crop is a straightforward extension).
+#
+# Predicted gap vs baseline: 0.08 - 0.11 (per the plan); Stage 1 BEAT baseline
+# at -0.0119 so the Stage-2 prediction may also be conservative.
+#
+# Run via kaggle/photonflow-zero-oeo-stage2/ kernel.
+
+experiment:
+  name: exp_zero_oeo_stage2
+  description: "PhotonFlow Stage-2: Stage-1 + photonic time MLP + adaLN + final-layer (YELLOW)"
+
+model:
+  type: photonflow
+  # --- v17 architecture backbone, UNCHANGED ---
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 14
+  time_dim: 256
+  gate_init: 0.5
+  adaln_init_std: 0.02
+  adaln_bottleneck: 8
+  num_monarch_factors: 1
+  monarch_init: random
+  depth_decay_residual: false
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: false
+  mean_center_norm: false
+
+  # --- Stage-0 mitigations (M2/M5/M8a/M9/M12) ---
+  use_noise: true
+  sigma_s: 0.001
+  sigma_t: 0.005
+  shot_signal_dependent: true
+  absorber_intensity_mode: differential
+  cumulative_loss_db_per_stage: 0.0003
+  monarch_bias: false
+
+  # --- Stage-1 GREEN kwargs (M1/M7/M8b) ---
+  unitary_project: true
+  proj_style: monarch
+  phase_noise_sigma: 0.005
+
+  # --- Stage-2 YELLOW kwargs (photonic SiLU + photonic MLPs) ---
+  time_encoding: wavelength      # WavelengthCodedTime (Moss 2022 AWGR)
+  time_mlp_style: monarch        # PPLNSigmoid + MonarchLinear in time_mlp
+  adaln_proj_style: monarch      # PPLNSigmoid + MonarchLinear in adaLN_proj
+  final_adaln_style: monarch     # PPLNSigmoid + MonarchLinear in final_adaLN
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 2000
+  warmup_steps: 600
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 1000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_zero_oeo_stage2
