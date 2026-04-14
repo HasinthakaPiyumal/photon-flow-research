@@ -19,8 +19,8 @@ model:
   hidden_dim: 784
   num_blocks: 8
   use_noise: true
-  sigma_s: 0.02
-  sigma_t: 0.01
+  sigma_s: 0.005             # 5x above Shen 2017 hardware measurement (0.001)
+  sigma_t: 0.003             # Proportionally scaled thermal crosstalk
   noise_warmup_steps: 10000   # Ramp noise from 0→full over first 10K steps
   noise_warmup_schedule: cosine  # cosine ramp (smoother than linear at boundary)
   noise_augment_k: 2             # Average gradient over K noise realizations per step
