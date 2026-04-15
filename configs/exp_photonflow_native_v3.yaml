@@ -1,0 +1,86 @@
+# exp_photonflow_native_v3.yaml
+# PhotonFlow photon-native v3 -- stacked MZI + aggressive init.
+#
+# v2 (two-axis + nonlinear cond_bias + 21 blocks) hurt the gap
+# (+0.1308 vs v1's +0.1241).  Analysis: Monarch(784) with m=28 already
+# mixes as a 28x28 grid matching MNIST's natural spatial layout; the
+# v2 49x16 factorisation broke that alignment.  21 blocks also pushed
+# the photonic saturation chain too deep.
+#
+# v3 reverts v2 changes and tries a different photon-native direction:
+#
+#   1. `num_monarch_factors=2` -- STACKED MZI meshes per Monarch layer.
+#      Each Monarch becomes a cascade of two MZI meshes (Dao 2022 §3.2
+#      M = M_k * ... * M_2 * M_1), doubling the expressivity per block.
+#      Both stages are Cayley-unitary.  Photonic.
+#
+#   2. `adaln_init_std=0.5` -- AGGRESSIVE cond_bias initialisation.
+#      v1 used 0.02 (DiT adaLN-Zero style; blocks start as near-identity).
+#      For photon-native we have NO gates to help the optimiser build a
+#      strong signal early, so we push the additive-bias magnitude up at
+#      init.  Mimics Stage-1's gate_init=0.5 success in spirit.
+#
+#   3. `num_blocks=10` -- reduced from 14 to fit within baseline parity
+#      budget.  At factor=2 each block has twice the Monarch params so
+#      10 blocks x (2 * 4 * 43904 params) + cond_bias + bookends =
+#      5.00 M params (1.02x baseline 4.89M).
+#
+# Architecture is flat single-axis (reverts v2 two-axis).  No nonlinear
+# cond_bias bottleneck (reverts v2's MLP).
+#
+# Predicted gap: <= 0.08 (better than v1, hopefully <= 0.05).
+
+experiment:
+  name: exp_photonflow_native_v3
+  description: "PhotonFlow photon-native v3 -- stacked MZI (factor=2) + aggressive init"
+
+model:
+  type: photonflow
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 10                              # -4 vs v1 (factor=2 doubles per-block)
+  time_dim: 256
+  use_noise: true
+  sigma_s: 0.001
+  sigma_t: 0.005
+  shot_signal_dependent: true
+  monarch_init: random
+  adaln_init_std: 0.5                         # +25x more aggressive than v1 (0.02)
+  num_monarch_factors: 2                      # stacked MZI per Monarch (Dao §3.2)
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: false
+  mean_center_norm: false
+  phase_noise_sigma: 0.005
+  cumulative_loss_db_per_stage: 0.0003
+  # NO two-axis (seq_dim, feat_dim omitted)
+  # NO nonlinear cond_bias (cond_bias_hidden omitted)
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 2000
+  warmup_steps: 600
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 1000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_photonflow_native_v3
