@@ -1,0 +1,86 @@
+# exp_photonflow_native_v2.yaml
+# PhotonFlow photon-native v2: two-axis Monarch + nonlinear cond_bias.
+#
+# v2 targets a lower gap-to-baseline (≤ 0.05) while staying strictly
+# photon-native (zero electronic ops in the forward graph).  Three
+# architectural levers vs. v1 (`exp_photonflow_native.yaml`):
+#
+#   1. `seq_dim=49`, `feat_dim=16`  -- two-axis Monarch in sub-layer 1.
+#      For MNIST 28x28 = 784, split as 49 tokens x 16 features (7x7 patch
+#      grid with 16 pixels / patch).  Sub-layer 1 applies Monarch(feat_dim)
+#      for channel mixing AND Monarch(seq_dim) for token mixing -- the
+#      photonic analog of DiT's patchify + attention (Dao NeurIPS 2023 M2).
+#      Both axes are MZI meshes on different waveguide-routed dimensions.
+#
+#   2. `cond_bias_hidden=64` -- nonlinear cond_bias_proj:
+#      MonarchLinear(256,64) -> PPLNSigmoid -> MonarchLinear(64,1568).
+#      Replaces the v1 single linear projection with a 2-layer MLP; gives
+#      the per-block time conditioning a nonlinear mapping while keeping
+#      every op photonic (MZI + PPLN chi^2 nonlinearity).
+#
+#   3. `num_blocks=21` -- deeper net to fill the baseline parameter
+#      budget (~4.89M).  Photonic scaling: more MZI mesh stages, no
+#      change in per-op electronics.
+#
+# Predicted gap vs baseline (0.1734): ≤ 0.05 (target).
+# If v2 lands outside the band we iterate -- no fallback to electronic ops.
+#
+# Total params @ this config: ~4.86M (0.995× baseline 4,886,544).
+
+experiment:
+  name: exp_photonflow_native_v2
+  description: "PhotonFlow photon-native v2 -- two-axis Monarch + nonlinear cond_bias"
+
+model:
+  type: photonflow
+  # Photonic hyperparameters
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 21                              # +7 vs v1 (fills baseline-parity budget)
+  time_dim: 256                               # 16^2
+  use_noise: true
+  sigma_s: 0.001
+  sigma_t: 0.005
+  shot_signal_dependent: true
+  monarch_init: random
+  adaln_init_std: 0.02
+  num_monarch_factors: 1
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: false
+  mean_center_norm: false
+  phase_noise_sigma: 0.005
+  cumulative_loss_db_per_stage: 0.0003
+  # --- v2 architectural levers (photon-native) ---
+  seq_dim: 49                                 # 7x7 patch grid
+  feat_dim: 16                                # 4x4 pixels per patch
+  cond_bias_hidden: 64                        # 8^2 bottleneck for nonlinear cond_bias
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 2000
+  warmup_steps: 600
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 1000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_photonflow_native_v2

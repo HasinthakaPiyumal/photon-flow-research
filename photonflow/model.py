@@ -305,6 +305,15 @@ class PhotonFlowBlock(nn.Module):
         phase_noise_sigma: float = 0.005,
         cumulative_loss_db_per_stage: float = 0.0003,
         block_index: int = 0,
+        # --- Two-axis Monarch kwargs (Dao NeurIPS 2023 M2 style) ---
+        # When seq_dim * feat_dim == dim AND both are perfect squares,
+        # sub-layer 1 applies Monarch(feat_dim) for channel mixing AND
+        # Monarch(seq_dim) for token mixing.  Photonically both are MZI
+        # meshes on different waveguide-routed axes.
+        seq_dim: int = None,
+        feat_dim: int = None,
+        # --- cond_bias_proj nonlinear MLP (replaces single linear) ---
+        cond_bias_hidden: int = 0,  # 0 => single-layer; >0 => 2-layer bottleneck
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -312,15 +321,37 @@ class PhotonFlowBlock(nn.Module):
         self._stage1 = 2 * self.block_index
         self._stage2 = 2 * self.block_index + 1
 
-        # ---- Photon-native conditioning: single additive bias per sub-layer ----
-        # `cond_bias_proj` maps the time embedding (B, time_dim) to a (B, 2*dim)
-        # bias which we chunk into (cb1, cb2), added to each sub-layer's
-        # normalised features as a coherent optical offset.  No per-channel
-        # scale, shift, or gate -- those are deleted along with adaLN.
+        # ---- Two-axis mixing (optional, photonic via per-axis MZI meshes) ----
+        self.use_two_axis = seq_dim is not None and feat_dim is not None
+        if self.use_two_axis:
+            if seq_dim * feat_dim != dim:
+                raise ValueError(
+                    f"seq_dim * feat_dim must equal dim: {seq_dim}*{feat_dim} != {dim}"
+                )
+            if math.isqrt(seq_dim) ** 2 != seq_dim or math.isqrt(feat_dim) ** 2 != feat_dim:
+                raise ValueError(
+                    f"seq_dim={seq_dim} and feat_dim={feat_dim} must both be perfect squares"
+                )
+            self.seq_dim = int(seq_dim)
+            self.feat_dim = int(feat_dim)
+
+        # ---- Photon-native conditioning: additive bias per sub-layer ----
+        # Either a single MonarchLinear (cond_bias_hidden=0, legacy) or a
+        # 2-layer nonlinear MLP (MonarchLinear -> PPLNSigmoid -> MonarchLinear)
+        # when cond_bias_hidden > 0.  Both are photonic.  The bottleneck
+        # gives the time conditioning a nonlinear mapping (more expressive
+        # than a single linear projection) while keeping every op photonic.
         _cb_scale = adaln_init_std if adaln_init_std > 0 else 0.02
-        self.cond_bias_proj = MonarchLinear(
-            time_dim, 2 * dim, init_scale=_cb_scale, bias=True
-        )
+        if cond_bias_hidden > 0:
+            self.cond_bias_proj = nn.Sequential(
+                MonarchLinear(time_dim, cond_bias_hidden, init_scale=0.1, bias=True),
+                PPLNSigmoid(beta=1.0),
+                MonarchLinear(cond_bias_hidden, 2 * dim, init_scale=_cb_scale, bias=True),
+            )
+        else:
+            self.cond_bias_proj = MonarchLinear(
+                time_dim, 2 * dim, init_scale=_cb_scale, bias=True
+            )
 
         # ---- Sub-layer 1: Spatial mixing (Monarch pair + SA) ----
         # DivisivePowerNorm has a FIXED buffer gain (no learnable affine).
@@ -332,8 +363,18 @@ class PhotonFlowBlock(nn.Module):
             init=monarch_init,
             num_factors=num_monarch_factors,
         )
-        self.monarch_l = MonarchLayer(dim, **_monarch_kwargs)
-        self.monarch_r = MonarchLayer(dim, **_monarch_kwargs)
+        if self.use_two_axis:
+            # Token-axis MZI mesh (Monarch over seq_dim) and
+            # feature-axis MZI mesh (Monarch over feat_dim).
+            # Both are Cayley-unitary.  Photonically these are two distinct
+            # MZI meshes operating on the two spatial axes of the tensor
+            # (B, seq_dim, feat_dim) via waveguide routing.
+            self.monarch_spatial = MonarchLayer(self.seq_dim, **_monarch_kwargs)
+            self.monarch_feature = MonarchLayer(self.feat_dim, **_monarch_kwargs)
+        else:
+            # Single-axis flat Monarch (legacy single-axis mode).
+            self.monarch_l = MonarchLayer(dim, **_monarch_kwargs)
+            self.monarch_r = MonarchLayer(dim, **_monarch_kwargs)
         self.absorber1 = SaturableAbsorber(
             alpha=absorber_alpha,
             learnable_alpha=learnable_absorber_alpha,
@@ -379,14 +420,38 @@ class PhotonFlowBlock(nn.Module):
         Returns:
             (B, dim) output features.
         """
-        # Photon-native conditioning: single wavelength-encoded bias per sub-layer
+        # Photon-native conditioning: wavelength-encoded bias per sub-layer.
+        # `cond_bias_proj` is either a single MonarchLinear (linear, simple)
+        # or a 2-layer MonarchLinear -> PPLNSigmoid -> MonarchLinear bottleneck
+        # (nonlinear, richer time mapping).  Both are photonic.
         cb = self.cond_bias_proj(t_emb)        # (B, 2*dim)
         cb1, cb2 = cb.chunk(2, dim=-1)
 
-        # Sub-layer 1: norm -> bias -> Monarch_L -> Monarch_R -> SA -> noise -> +x
+        # Sub-layer 1: norm -> bias -> (spatial-mix + feature-mix | flat Monarch)
+        #              -> SA -> noise -> +x
         h = self.norm1(x) + cb1
-        h = self.monarch_l(h)
-        h = self.monarch_r(h)
+        if self.use_two_axis:
+            # Two-axis photonic mixing (Dao NeurIPS 2023 M2):
+            #   (B, dim) -> (B, S, F)
+            #     Feature-axis MZI mesh: Monarch(feat_dim) over each token
+            #     Token-axis MZI mesh:   Monarch(seq_dim) over each feature
+            #   -> (B, dim)
+            B = h.shape[0]
+            h = h.reshape(B, self.seq_dim, self.feat_dim)
+            # Feature-axis mixing: flatten (B, S, F) -> (B*S, F), Monarch(F)
+            h = h.reshape(B * self.seq_dim, self.feat_dim)
+            h = self.monarch_feature(h)
+            h = h.reshape(B, self.seq_dim, self.feat_dim)
+            # Token-axis mixing: transpose to (B, F, S), flatten, Monarch(S)
+            h = h.transpose(1, 2).contiguous()
+            h = h.reshape(B * self.feat_dim, self.seq_dim)
+            h = self.monarch_spatial(h)
+            h = h.reshape(B, self.feat_dim, self.seq_dim)
+            h = h.transpose(1, 2).contiguous()
+            h = h.reshape(B, self.dim)
+        else:
+            h = self.monarch_l(h)
+            h = self.monarch_r(h)
         h = self.absorber1(h)
         if self.noise1 is not None:
             h = self.noise1(h)
@@ -403,7 +468,10 @@ class PhotonFlowBlock(nn.Module):
         return x
 
     def extra_repr(self) -> str:
-        return f"dim={self.dim}, photon_native=True, block_index={self.block_index}"
+        extras = [f"dim={self.dim}", "photon_native=True", f"block_index={self.block_index}"]
+        if self.use_two_axis:
+            extras.append(f"seq_dim={self.seq_dim}, feat_dim={self.feat_dim}")
+        return ", ".join(extras)
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +546,11 @@ class PhotonFlowModel(nn.Module):
         mean_center_norm: bool = False,
         phase_noise_sigma: float = 0.005,
         cumulative_loss_db_per_stage: float = 0.0003,
+        # --- Two-axis Monarch (Dao NeurIPS 2023 M2) kwargs ---
+        seq_dim: int = None,
+        feat_dim: int = None,
+        # --- Nonlinear cond_bias MLP (0 = legacy single linear) ---
+        cond_bias_hidden: int = 0,
     ) -> None:
         super().__init__()
         # hidden_dim must be a perfect square for MonarchLayer
@@ -537,6 +610,10 @@ class PhotonFlowModel(nn.Module):
                 phase_noise_sigma=phase_noise_sigma,
                 cumulative_loss_db_per_stage=cumulative_loss_db_per_stage,
                 block_index=i,
+                # --- Two-axis + nonlinear cond_bias kwargs ---
+                seq_dim=seq_dim,
+                feat_dim=feat_dim,
+                cond_bias_hidden=cond_bias_hidden,
             )
             for i in range(num_blocks)
         ])
