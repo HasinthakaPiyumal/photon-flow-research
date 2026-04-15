@@ -1,0 +1,75 @@
+# exp_photonflow_native_v4.yaml
+# PhotonFlow photon-native v4 -- v3 architecture + doubled training horizon.
+#
+# v3 (factor=2 stacked MZI + aggressive init + 10 blocks) achieved gap
+# +0.1028 at 2K steps (0.0213 better than v1, but still above target 0.05).
+# The v3 eval trajectory was dropping fast at step 2000:
+#   step 500  -> 0.4307
+#   step 1000 -> 0.3452  (-0.0855)
+#   step 1500 -> 0.3027  (-0.0425)
+#   step 2000 -> 0.2762  (-0.0265)
+#
+# An exponential fit f(s) = f0 * exp(-s/tau) gives tau ~ 3000, predicting:
+#   step 3000 -> eval ~ 0.184  (gap +0.011 -- hits target 0.05)
+#   step 4000 -> eval ~ 0.132  (gap -0.04  -- BEATS baseline)
+#
+# Baseline has already saturated at step 2000 (trajectory: 0.2000 ->
+# 0.1817 -> 0.1757 -> 0.1734 -- only -0.023 in the last 1500 steps).
+# Longer training thus asymmetrically helps photonflow_native.
+#
+# v4 doubles total_steps to 4000 (both runs, apples-to-apples) and
+# proportionally scales warmup_steps to 1200 (still 30% of total).
+# Architecture is UNCHANGED from v3 (all photon-native).
+
+experiment:
+  name: exp_photonflow_native_v4
+  description: "PhotonFlow photon-native v4 -- v3 arch + 4K training (trajectory extrapolation suggests gap <= 0.05)"
+
+model:
+  type: photonflow
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 10                              # v3 setting
+  time_dim: 256
+  use_noise: true
+  sigma_s: 0.001
+  sigma_t: 0.005
+  shot_signal_dependent: true
+  monarch_init: random
+  adaln_init_std: 0.5                         # v3 aggressive init
+  num_monarch_factors: 2                      # v3 stacked MZI
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: false
+  mean_center_norm: false
+  phase_noise_sigma: 0.005
+  cumulative_loss_db_per_stage: 0.0003
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 4000                           # +2000 vs v3 (trajectory not saturated)
+  warmup_steps: 1200                          # 30% of total
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 2000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_photonflow_native_v4
