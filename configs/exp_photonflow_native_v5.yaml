@@ -1,0 +1,87 @@
+# exp_photonflow_native_v5.yaml
+# PhotonFlow photon-native v5 -- v4 + all remaining photonic levers.
+#
+# v4 (factor=2, 10 blocks, aggressive init, 4K training) landed gap +0.0916.
+# The descent slowed to -0.0043 per 500 steps at step 4000, suggesting
+# architectural capacity limit around gap +0.09 under strict photon-native.
+#
+# v5 combines three additional photonic levers:
+#
+#   1. `use_noise=False` -- disable PhotonicNoise training-time
+#      regularization.  Stage-1 (gap -0.0119) didn't use noise either;
+#      noise costs ~0.01 when the baseline has saturated.  Photonically
+#      irrelevant (physical noise on chip still happens; we just don't
+#      simulate it during training).
+#
+#   2. `time_dim=576` (24^2) + `cond_bias_hidden=16` -- wider time
+#      embedding + nonlinear cond_bias MLP:
+#        WavelengthCodedTime(256) -> MonarchLinear(256, 576) ->
+#        PPLNSigmoid -> MonarchLinear(576, 576)      [time_mlp]
+#        MonarchLinear(576, 16) -> PPLNSigmoid ->
+#        MonarchLinear(16, 2*dim)                     [cond_bias MLP]
+#      Every op MZI + PPLN (photonic).
+#
+#   3. `num_monarch_factors=3` -- triple-stacked MZI per Monarch (Dao
+#      2022 §3.2 M = M_k*...*M_1 with k=3).  More photonic mesh stages
+#      per block.  To fit baseline-parity budget: `num_blocks=7`.
+#
+# Params: 5,108,432 (1.045x baseline 4,886,544).  Architecture flat
+# single-axis (no two-axis, no bookend-monarch changes).  Training 4K
+# steps (same as v4 for apples-to-apples continuation).
+#
+# Predicted gap: 0.06-0.08 (best photon-native).  If v5 lands above
+# 0.05, the strict "no electronic op" constraint sets the floor.
+
+experiment:
+  name: exp_photonflow_native_v5
+  description: "PhotonFlow photon-native v5 -- all 3 photonic levers (no noise + wider time + factor=3)"
+
+model:
+  type: photonflow
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 7                               # -3 vs v4 (factor=3 triples per-block Monarch)
+  time_dim: 576                               # 24^2 (was 256=16^2)
+  use_noise: false                            # Stage-1 style; no noise regularization
+  sigma_s: 0.0
+  sigma_t: 0.0
+  shot_signal_dependent: false
+  monarch_init: random
+  adaln_init_std: 0.5                         # v3/v4 aggressive init
+  num_monarch_factors: 3                      # triple-stacked MZI per Monarch
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: false
+  mean_center_norm: false
+  phase_noise_sigma: 0.0                      # no phase-noise training
+  cumulative_loss_db_per_stage: 0.0003
+  cond_bias_hidden: 16                        # nonlinear cond_bias MLP bottleneck
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 4000
+  warmup_steps: 1200
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 2000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_photonflow_native_v5
