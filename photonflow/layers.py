@@ -26,7 +26,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from photonflow.activation import SaturableAbsorber
-from photonflow.model import MonarchLayer
+# NOTE: MonarchLayer is imported lazily inside MonarchLinear.__init__ to avoid
+# a circular import with photonflow.model (which imports this file for
+# MonarchLinear + PPLNSigmoid).
 
 __all__ = ["PPLNSigmoid", "MonarchLinear"]
 
@@ -112,9 +114,10 @@ class MonarchLinear(nn.Module):
 
     def __init__(self, in_dim: int, out_dim: int,
                  bias: bool = False, init: str = "random",
-                 unitary_project: bool = False,
                  init_scale: float | None = None) -> None:
         super().__init__()
+        # Lazy import to avoid circular dependency with photonflow.model.
+        from photonflow.model import MonarchLayer
         if in_dim <= 0 or out_dim <= 0:
             raise ValueError(f"in_dim, out_dim must be positive, got {in_dim}, {out_dim}")
         self.in_dim = in_dim
@@ -123,16 +126,14 @@ class MonarchLinear(nn.Module):
         m = int(math.ceil(math.sqrt(max(in_dim, out_dim))))
         self.padded_dim = m * m
         self.m = m
-        # Inner MonarchLayer is always bias=False; the separate `bias` buffer
-        # below has shape (out_dim,), matching nn.Linear's bias semantics
-        # (and letting external code -- e.g. the adaLN gate_init in
-        # PhotonFlowBlock -- write to specific output channels).
+        # Inner MonarchLayer is Cayley-unitary and has no bias (Dao Def 3.1).
+        # The outer `bias` parameter below is an additive offset on the cropped
+        # output (chip-boundary electronic-controlled DAC trim at deploy) --
+        # used by cond_bias_proj to carry time-conditioning offsets.
         self.monarch = MonarchLayer(
             self.padded_dim,
-            bias=False,
             init=init,
             num_factors=1,
-            unitary_project=unitary_project,
         )
         if init_scale is not None:
             with torch.no_grad():

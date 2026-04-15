@@ -119,7 +119,6 @@ class DivisivePowerNorm(nn.Module):
         eps: float = 1e-6,
         dim: int = -1,
         num_features: int = None,
-        learnable: bool = True,
         mean_center: bool = False,
     ) -> None:
         super().__init__()
@@ -135,22 +134,23 @@ class DivisivePowerNorm(nn.Module):
         # boundary (measure + subtract DC); kept off-chip-compatible.
         self.mean_center = mean_center
 
-        # Learnable affine parameters (electronic post-processing)
-        # gain is initialized to sqrt(num_features) to compensate for the
-        # magnitude compression of divisive normalization. For a 256-dim
-        # vector with unit-variance entries, ||x||_2 ≈ sqrt(256) = 16, so
-        # x / ||x|| compresses magnitudes ~16x. Initializing gain = sqrt(dim)
-        # exactly cancels this, making the layer initially act as a direction-
-        # preserving rescaler. This also cancels the 1/||x|| gradient
-        # attenuation: ∂out/∂in ∝ gain/||x|| ≈ sqrt(dim)/sqrt(dim) = 1.
-        if num_features is not None and learnable:
-            self.gain = nn.Parameter(
-                torch.full((num_features,), num_features ** 0.5)
+        # FIXED per-channel gain (Stage-3a insight): registered as a BUFFER not
+        # a Parameter, so it is not learnable-at-run-time.  Physically this is
+        # a pre-set tunable optical amplifier (EDFA / SOA array; Ning 2024)
+        # calibrated once at deploy time to compensate for the magnitude
+        # compression of divisive normalisation:
+        #   ||x||_2 ≈ sqrt(num_features) for unit-variance entries, so
+        #   x / ||x||_2 compresses magnitudes by that factor; multiplying by
+        #   sqrt(num_features) exactly cancels the compression and leaves the
+        #   forward pass as a direction-preserving rescaler.  No bias --
+        #   Dao-style, no additive optical-domain shift.
+        if num_features is not None:
+            self.register_buffer(
+                "gain", torch.full((num_features,), num_features ** 0.5)
             )
-            self.bias = nn.Parameter(torch.zeros(num_features))
         else:
             self.gain = None
-            self.bias = None
+        self.bias = None  # no learnable bias -- electronic, deleted
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply divisive power normalization.
@@ -161,7 +161,7 @@ class DivisivePowerNorm(nn.Module):
 
         Returns:
             Tensor of the same shape as x. Each slice along self.dim has
-            L2 norm approximately equal to 1.0 (before affine transform).
+            L2 norm approximately equal to 1.0 before the fixed gain.
         """
         # Optional mean centering (LayerNorm-style DC removal).
         # Kept off by default for photonic compatibility; turned on via kwarg
@@ -176,16 +176,16 @@ class DivisivePowerNorm(nn.Module):
         # Divide by (norm + eps). The eps prevents NaN when x = 0.
         out = x / (norm + self.eps)
 
-        # Optional learnable affine (electronic post-processing step)
+        # Fixed optical-amplifier gain (no learnable bias).
         if self.gain is not None:
-            out = out * self.gain + self.bias
+            out = out * self.gain
 
         return out
 
     def extra_repr(self) -> str:
         s = f"eps={self.eps}, dim={self.dim}"
         if self.num_features is not None:
-            s += f", num_features={self.num_features}, affine=True"
+            s += f", num_features={self.num_features}, fixed_gain=sqrt({self.num_features})"
         if self.mean_center:
             s += ", mean_center=True"
         return s
@@ -272,34 +272,36 @@ if __name__ == "__main__":
         torch.full((64,), expected_gain_init),
         atol=1e-5,
     ), f"Gain should init to sqrt(64)=8.0, got {norm_aff.gain.data[0].item():.4f}"
-    # With gain=sqrt(64)=8.0, bias=0: output = 8.0 * plain_norm(x)
+    # With fixed-buffer gain=sqrt(64)=8.0 (no bias): output = 8.0 * plain_norm(x)
     out6_plain = DivisivePowerNorm(eps=1e-6)(x6)
     assert torch.allclose(out6, expected_gain_init * out6_plain, atol=1e-4), (
-        "Affine with gain=sqrt(64), bias=0 should be sqrt(64) * plain norm"
+        "Fixed gain=sqrt(64) should give sqrt(64) * plain norm"
     )
-    # Modify gain and bias -> output should change
+    # Modify the fixed-buffer gain (simulating a re-calibration) -> output scales
     norm_aff.gain.data.fill_(2.0)
-    norm_aff.bias.data.fill_(0.5)
     out6_mod = norm_aff(x6)
-    expected = 2.0 * out6_plain + 0.5
+    expected = 2.0 * out6_plain
     assert torch.allclose(out6_mod, expected, atol=1e-5), (
-        "Affine: gain=2, bias=0.5 should give 2*norm(x)+0.5"
+        "Fixed gain=2 should give 2 * plain_norm(x) (no bias)"
     )
-    # Gradients flow through gain and bias
+    # Gain must NOT be a learnable Parameter -- it is a fixed optical amplifier
+    # (chip-boundary calibration, not runtime-modulated).  No gradient should flow.
     x6g = torch.randn(4, 64, requires_grad=True)
     norm_aff2 = DivisivePowerNorm(num_features=64)
     out6g = norm_aff2(x6g)
     out6g.sum().backward()
-    assert x6g.grad is not None, "Affine: no gradient for input"
-    assert norm_aff2.gain.grad is not None, "Affine: no gradient for gain"
-    assert norm_aff2.bias.grad is not None, "Affine: no gradient for bias"
-    print(f"  [PASS] Test 6 — learnable affine: gain init=sqrt(64)={expected_gain_init:.1f}, gradients flow")
+    assert x6g.grad is not None, "Fixed-gain affine: no gradient through input"
+    assert not isinstance(norm_aff2.gain, nn.Parameter), (
+        "gain must be a buffer (fixed optical amplifier), NOT a learnable Parameter"
+    )
+    assert norm_aff2.bias is None, "bias must be None (Dao-style, no additive shift)"
+    print(f"  [PASS] Test 6 — fixed optical gain: sqrt(64)={expected_gain_init:.1f}, buffer not Parameter")
 
-    # --- Test 7: no affine when num_features is None ---
+    # --- Test 7: no gain when num_features is None ---
     norm_no_aff = DivisivePowerNorm(eps=1e-6)
     assert norm_no_aff.gain is None, "gain should be None without num_features"
     assert norm_no_aff.bias is None, "bias should be None without num_features"
-    print(f"  [PASS] Test 7 — no affine: gain=None, bias=None (backward compatible)")
+    print(f"  [PASS] Test 7 — no gain: gain=None, bias=None when num_features=None")
 
     print()
     print("All tests passed.")

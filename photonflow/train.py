@@ -56,7 +56,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from photonflow.model import PhotonFlowModel
 
-__all__ = ["CFMLoss", "euler_sample", "Trainer", "EMA"]
+__all__ = ["CFMLoss", "Trainer", "EMA"]
 
 
 # ---------------------------------------------------------------------------
@@ -309,49 +309,12 @@ class CFMLoss(nn.Module):
 # Euler ODE sampler (Lipman 2023, Section 6.2)
 # ---------------------------------------------------------------------------
 
-@torch.no_grad()
-def euler_sample(
-    model: nn.Module,
-    shape: tuple,
-    num_steps: int = 20,
-    device: str = "cpu",
-) -> torch.Tensor:
-    """Generate samples using Euler ODE integration.
-
-    Integrates  dx/dt = v_theta(x, t)  from t=0 to t=1.
-
-    Lipman 2023, Section 6.2: start from x_0 ~ N(0,I), integrate with
-    the trained vector field.  OT paths give decent quality at NFE=20
-    (Figure 4, right panel).
-
-    Args:
-        model:     Trained PhotonFlowModel.
-        shape:     (B, D) -- number of samples and dimension.
-        num_steps: Euler steps (= NFE). Default 20.
-        device:    Torch device (str or torch.device).
-
-    Returns:
-        (B, D) generated samples.
-    """
-    if num_steps <= 0:
-        raise ValueError(f"num_steps must be positive, got {num_steps}")
-
-    was_training = model.training
-    model.eval()
-
-    x = torch.randn(shape, device=device)
-    dt = 1.0 / num_steps
-
-    for i in range(num_steps):
-        t_val = i * dt
-        t = torch.full((shape[0],), t_val, device=device)
-        v = model(x, t)
-        x = x + dt * v
-
-    if was_training:
-        model.train()
-
-    return x
+# NOTE: the legacy `euler_sample(...)` function was DELETED as part of the
+# photon-native rewrite.  Its 20-step for-loop with per-step readout +
+# re-encode was an electronic O-E-O cycle (mismatch M10, 20 conversions per
+# sample).  Use `photonflow.sampler.OpticalSampler` instead -- it is a
+# recirculating MZI delay-line sampler with a single detector comparator at
+# termination.
 
 
 # ---------------------------------------------------------------------------
@@ -668,10 +631,16 @@ class Trainer:
         if self.ema is not None:
             backup = self.ema.apply(model_for_sample)
 
-        samples = euler_sample(
+        # Photon-native sampling: recirculating MZI delay-line fixed-point
+        # with single detector comparator.  See photonflow/sampler.py.
+        from photonflow.sampler import OpticalSampler
+        sampler = OpticalSampler(
             model_for_sample,
+            tau=1.0 / max(self.sample_steps, 1),
+            max_iters=self.sample_steps,
+        )
+        samples = sampler(
             shape=(n_samples, in_dim),
-            num_steps=self.sample_steps,
             device=self.device,
         )
 
@@ -747,13 +716,16 @@ if __name__ == "__main__":
     total_p = sum(p.numel() for p in model.parameters())
     print(f"  [PASS] Test 2 -- Gradients: all {total_p:,} params, no NaN/Inf grads")
 
-    # --- Test 3: euler_sample -- shape, no NaN ---
+    # --- Test 3: OpticalSampler (photon-native) -- shape, no NaN ---
+    from photonflow.sampler import OpticalSampler
     model.eval()
-    samples = euler_sample(model, shape=(4, 64), num_steps=10, device="cpu")
+    sampler = OpticalSampler(model, tau=0.1, max_iters=10)
+    samples = sampler(shape=(4, 64), device="cpu")
     assert samples.shape == (4, 64), f"Sample shape: {samples.shape}"
     assert not torch.isnan(samples).any(), "NaN in samples"
     assert not torch.isinf(samples).any(), "Inf in samples"
-    print(f"  [PASS] Test 3 -- euler_sample: shape=(4,64), 10 steps, no NaN/Inf")
+    assert sampler.count_electronic_ops() <= 1, "OpticalSampler must have <=1 electronic op"
+    print(f"  [PASS] Test 3 -- OpticalSampler: shape=(4,64), photon-native, <=1 E-op")
 
     # --- Test 3b: input validation ---
     # CFMLoss rejects 4D input
@@ -768,10 +740,10 @@ if __name__ == "__main__":
         assert False, "Should have raised ValueError for B=0"
     except ValueError:
         pass
-    # euler_sample rejects num_steps=0
+    # OpticalSampler rejects max_iters<=0
     try:
-        euler_sample(model, shape=(4, 64), num_steps=0)
-        assert False, "Should have raised ValueError for num_steps=0"
+        OpticalSampler(model, max_iters=0)(shape=(4, 64))
+        assert False, "Should have raised ValueError for max_iters=0"
     except ValueError:
         pass
     print(f"  [PASS] Test 3b -- Validation: rejects 4D, empty batch, num_steps=0")
@@ -875,7 +847,7 @@ if __name__ == "__main__":
     print("  [3] Gradient clipping (training.grad_clip, default 1.0)")
     print("  [4] CFMLoss input validation (ndim != 2, B == 0)")
     print("  [5] CFMLoss model output shape check")
-    print("  [6] euler_sample validates num_steps > 0")
+    print("  [6] OpticalSampler replaces euler_sample (photon-native, <=1 E-op)")
     print("  [7] NaN/Inf loss guard stops training early")
     print("  [8] Auto-flatten >2D input in Trainer.train()")
     print("  [9] generate_samples warns on error instead of silent pass")

@@ -1,0 +1,70 @@
+# exp_photonflow_native.yaml
+# PhotonFlow photon-native strict-zero-OEO config.
+#
+# This config uses ONLY the hyperparameters accepted by the new strict
+# photon-native PhotonFlowModel API.  There are no `*_style`, `*_mode`,
+# `*_enabled`, or legacy-dense-fallback keys -- those kwargs were DELETED
+# from the library in commit `photonflow-native`.
+#
+# The module tree is guaranteed to contain 0 nn.Linear, 0 nn.SiLU, 0
+# SinusoidalTimeEmbedding, 0 gated residuals, 0 adaLN scale/shift/gate,
+# 0 learnable per-channel affine in DivisivePowerNorm, 0 adaLN_proj
+# modules.  Every op in the forward pass maps to a published on-chip
+# photonic primitive (see photonflow_experiments_report.md §15).
+#
+# Expected MNIST CFM eval @ 2K steps: ~0.29 (matches Stage-3a),
+# gap +0.12 vs baseline 0.1734.
+
+experiment:
+  name: exp_photonflow_native
+  description: "PhotonFlow strictly photon-native (electronic code paths deleted)"
+
+model:
+  type: photonflow
+  # Photonic hyperparameters (all kwargs accepted by the new API)
+  in_dim: 784                               # MNIST
+  hidden_dim: 784                           # 28^2
+  num_blocks: 14
+  time_dim: 256                             # 16^2 (must be perfect square)
+  use_noise: true
+  sigma_s: 0.001                            # Shen 2017 σ_D
+  sigma_t: 0.005                            # Shen 2017 σ_φ proxy
+  shot_signal_dependent: true               # Shen physically-accurate shot noise
+  monarch_init: random                      # Xavier gain 0.1 (escapes identity basin)
+  adaln_init_std: 0.02                      # cond_bias_proj MonarchLinear init scale
+  num_monarch_factors: 1                    # Dao 2022 canonical
+  absorber_alpha: 0.8                       # Shen 2017 graphene SA
+  absorber_leaky_slope: 0.05                # 5% linear bypass past saturation
+  learnable_absorber_alpha: false
+  mean_center_norm: false                   # pure divisive norm (no DC subtract)
+  phase_noise_sigma: 0.005                  # Shen 2017 σ_φ ≈ 5e-3 rad
+  cumulative_loss_db_per_stage: 0.0003      # Shen 2017 single-MZI transmission
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 2000
+  warmup_steps: 600
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 1000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_photonflow_native
