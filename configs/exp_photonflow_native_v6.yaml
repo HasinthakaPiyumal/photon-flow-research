@@ -65,7 +65,7 @@ training:
   loss_weight_gamma: 0.0
 
 ema:
-  enabled: true
+  enabled: false  # v2: disabled at 2K (0.9999^2000 = 0.82; EMA shadow would still be 82% init weights)
   decay: 0.9999
 
 qat:
