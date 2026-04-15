@@ -58,12 +58,12 @@ data:
 
 training:
   lr: 1.7e-3
-  total_steps: 10000
-  warmup_steps: 2000
+  total_steps: 2000
+  warmup_steps: 600
   lr_schedule: cosine
   grad_clip: 1.0
-  checkpoint_every: 2000
-  sample_every: 1000
+  checkpoint_every: 1000
+  sample_every: 500
   sample_steps: 20
   seed: 42
   time_sampling: logit_normal
