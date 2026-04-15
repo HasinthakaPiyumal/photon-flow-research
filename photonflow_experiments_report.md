@@ -1089,3 +1089,136 @@ Two archive-only configurations exist:
 * `d14c3d2` -- §14 report update
 * **`3ecf94e` -- photon-native rewrite: delete ALL electronic code paths**
 * `$(this commit)` -- §15 report update
+
+
+## 16.  Photon-native gap-closing iteration (v1 -> v8 -> combo v1/v2)
+
+Target: reduce gap between baseline (0.1734) and strict photon-native
+PhotonFlow to <= 0.05 at baseline parity (~4.89 M params) under the
+hard constraint of zero electronic ops.  §15 established +0.1241 as
+the starting point; this section documents the eight iterations.
+
+### 16.1  Iteration trail (strict photon-native, 2K steps, baseline parity)
+
+| Variant | Changes | Params | Eval @ 2K | Gap |
+|---|---|---:|---:|---:|
+| photonflow_native v1 | baseline architecture | 4,377,280 | 0.2975 | +0.1241 |
+| v2 (two-axis) | seq_dim=49, feat_dim=16, 21 blocks | 4,860,070 | 0.3042 | +0.1308 ❌ |
+| v3 (stacked MZI) | factor=2, 10 blocks, init=0.5 | 5,000,512 | 0.2762 | +0.1028 |
+| v4 (+ 4K train) | v3 + 4K | 5,000,512 | 0.2497 | +0.0916 (4K) |
+| v5 (factor=3) | factor=3, 7 blocks, cb_hidden=16, noise=off | 5,108,432 | 0.3316 | +0.1582 |
+| v7 (block_emb) | + block_emb + cb_hidden=64 + learnable_alpha | 5,108,782 | 0.2687 | +0.0953 |
+| combo v1 A_ref | reproduce v7 | 5,108,782 | 0.2687 | +0.0953 |
+| combo v1 B_logit_n | + logit-normal sampling | 5,108,782 | 0.2878 | +0.1144 |
+| combo v1 C_dir_loss | + direction loss 0.5 | 5,108,782 | 0.2687 | +0.0953 (tied) |
+| combo v1 D_ortho | + orthogonal init | 5,108,782 | 0.4199 | +0.2465 ❌ |
+| combo v2 A_ref | control | 5,108,782 | 0.2687 | +0.0953 |
+| **combo v2 E_cb576** | cb_hidden=576 (no bottleneck) | **5,112,366** | **0.2664** | **+0.0930** ✨ |
+| combo v2 H_init_1 | adaln_init_std=1.0 | 5,108,782 | 0.2682 | +0.0948 |
+| combo v2 K_deep10 | 10 blocks x factor=2 | 5,317,204 | 0.2724 | +0.0990 |
+| combo v2 L_deep_wide | K + E combined | 5,322,324 | 0.2700 | +0.0966 |
+
+### 16.2  Architectural ceiling finding
+
+Combo v2 put five architecturally-distinct variants side by side (wider
+conditioning MLP, 2x more aggressive init, depth trade, deep+wide combo,
+control).  They all land in a narrow band of `[+0.0930, +0.0990]` --
+a 0.006-wide cluster.  The trajectories are nearly superimposable at
+every eval step.
+
+This clustering across widely different architectures is the signature
+of an **architectural ceiling**.  Every photonic primitive we have in
+the library (Cayley-unitary MonarchLayer, stacked factors, MonarchLinear
+with bottleneck, PPLNSigmoid, SaturableAbsorber with leaky bypass,
+DivisivePowerNorm with fixed gain, WavelengthCodedTime, additive
+cond_bias with per-block wavelength offset) is already in play.  More
+of any one of them doesn't move the needle.
+
+### 16.3  Why +0.09 is the floor
+
+The ~0.10 gap between the photon-native best (+0.093) and the Stage-1
+electronic result (-0.012, which BEAT baseline) corresponds to a
+specific architectural feature: **time-dependent per-channel
+modulation**.  Stage-1 had dense adaLN-Zero with gate_init=0.5 --
+per-dim multiplicative scale + additive shift + gate, all driven by
+the time embedding.  That is THREE ops per dim per block.
+
+Photon-native replaces all three with a single additive bias
+`h = norm(x) + cond_bias(t)`.  No per-dim scale, no per-dim gate.  The
+photonic primitives available -- MZI mesh, saturable absorber,
+microring divisive norm, fixed SOA gain, χ² PPLN, wavelength-routed
+waveguide offset -- cannot express time-dependent per-channel
+MULTIPLICATION at inference without an electronic DAC driving a
+modulator.  Block-index wavelength offset (pre-set MRM) is static; it
+carries per-block identity, not per-channel per-timestep modulation.
+
+### 16.4  What DID and DID NOT help (ablation summary)
+
+**Helped (monotone improvements):**
+- `num_monarch_factors=2` (v3, -0.02 vs v1)
+- Aggressive `adaln_init_std=0.5` (v3, embedded gain)
+- `block_emb` fixed-buffer wavelength offset (user; v7, -0.063 vs v5)
+- `cond_bias_hidden=64` with PPLNSigmoid MLP (v7)
+- `learnable_absorber_alpha` (v7)
+- Wider `cond_bias_hidden=576` (combo v2, -0.0023 more)
+
+**Neutral (within noise):**
+- `adaln_init_std=1.0` vs 0.5 (combo v2 H, -0.0005)
+- `direction_loss_weight=0.5` (combo v1 C, tied)
+- Depth/factor trade (combo v2 K/L, marginal -0.0013)
+
+**Hurt:**
+- `time_sampling=logit_normal` (combo v1 B, +0.019)
+- `monarch_init=orthogonal` with factor=3 (combo v1 D, +0.151 catastrophic)
+- Two-axis Monarch (v2, +0.007)
+- EMA at 2K (combo v6, catastrophic: shadow is 82% init)
+- `num_blocks=21` with flat Monarch (v2)
+
+### 16.5  The winning recipe (commit `4c2133e` + `E_cb576`)
+
+Best photon-native at 2K = **combo v2 E_cb576** (gap +0.0930):
+
+```yaml
+in_dim: 784
+hidden_dim: 784
+num_blocks: 7
+time_dim: 576                 # 24^2 (wider vs 256)
+num_monarch_factors: 3        # stacked MZI (Dao §3.2)
+monarch_init: random          # Xavier gain 0.1
+adaln_init_std: 0.5           # aggressive additive-bias init
+cond_bias_hidden: 576         # MATCH time_dim (no bottleneck)
+absorber_alpha: 0.8
+absorber_leaky_slope: 0.05
+learnable_absorber_alpha: true
+use_noise: false              # no noise regularization at 2K
+phase_noise_sigma: 0.0
+cumulative_loss_db_per_stage: 0.0003
+# Plus user's block_emb buffer (per-block pre-set wavelength offset)
+```
+
+Every forward-pass op maps to a published on-chip photonic primitive:
+0 nn.Linear, 0 nn.SiLU, 0 SinusoidalTimeEmbedding.  Params: 5,112,366
+(1.046x baseline).
+
+### 16.6  Conclusion
+
+Strict photon-native PhotonFlow, at 2K steps and baseline parity, has a
+**gap floor of approximately +0.09** vs the dense attention baseline.
+We hit the floor at combo v2 E_cb576 (gap +0.0930).  Closing the
+remaining 0.04 to hit the 0.05 target would require either:
+
+1. **Extended training** (4K steps brought v3 to +0.0916; by extrapolation 8K-10K
+   might bring an E_cb576-style config under 0.05 -- but this violates
+   the 2K apples-to-apples convention).
+2. **A new photonic primitive for per-channel time-dependent modulation**
+   (wavelength-division-multiplexed MRM array with voltage drive from
+   a co-integrated electronic controller, fluid-cooled, is the closest
+   thing in the literature -- but it does introduce an electronic DAC
+   at the chip boundary).
+3. **Reintroducing a single chip-boundary electronic op** (Stage-1 did
+   this with dense adaLN and beat baseline at gap -0.012).
+
+We pick option 0: **acknowledge the photon-native floor** and keep
+E_cb576 as the paper's photon-native number.  The 0.09 delta is the
+honest cost of strict zero-OEO at 2K-step MNIST CFM on this architecture
+family.
