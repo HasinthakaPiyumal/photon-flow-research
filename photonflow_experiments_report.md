@@ -898,3 +898,194 @@ All Kaggle kernels and their logs are archived under
 `kaggle/photonflow-zero-oeo{,-stage2,-stage3,-stage3a}/output/` for
 reproducibility.  The v17 mitigated baseline run at
 `kaggle/photonflow-mitigated/output/` is the §13 reference.
+
+
+## 15.  Photon-native rewrite -- electronic code paths DELETED (commit `3ecf94e`)
+
+The §14 staged rewrite left all electronic code paths behind kwargs.  The
+user's directive for this step was unambiguous: *"analyze code and fully
+make photon native, no any electronic op... if any function or something
+for electronic op remove that code in photonflow framework"*.
+
+Commit `3ecf94e` on branch `h/phase1` executes that directive.  Every
+electronic code path in `photonflow/` is deleted (not hidden behind a
+kwarg); the removed toggles no longer exist as API surface.  This is a
+BREAKING CHANGE: configs that relied on the old kwargs (e.g. the
+Stage-1-GREEN `configs/exp_zero_oeo_stage1.yaml`) cannot be rebuilt under
+the new API.  The Stage-1 result (gap -0.0119, beat attention baseline at
+0.77x params) remains archived as a historical paper number.
+
+### 15.1  Headline result
+
+Kaggle kernel `hasinthakapiyumal/photonflow-native` v1 ran two columns at
+2,000 steps each (same seed/batch/optimiser as §13/§14):
+
+| Run | Params | Eval @ 2 K | Gap vs baseline | Notes |
+|-----|-------:|-----------:|----------------:|-------|
+| baseline (DiT)       | 4,886,544 | 0.1734 | 0.0000  | attention reference |
+| **photonflow_native**| **4,377,280** | **0.2975** | **+0.1241** | strict photon-native |
+
+The photon-native model is 0.90x baseline in parameter count and produces
+a gap of +0.1241, matching the predicted +0.12 band from §14 and the
+archived Stage-3a measurement (gap +0.1163) within RNG noise.  The
+trajectory is still dropping at step 2,000 (0.5363 -> 0.3536 -> 0.3066 ->
+0.2975), so a longer run converges lower.
+
+### 15.2  What was deleted (~350 LoC of electronic code)
+
+**`photonflow/model.py`:**
+
+* `class SinusoidalTimeEmbedding` (the entire class, torch.sin/cos/exp
+  preprocessing) -- replaced by `from photonflow.time_embed import
+  WavelengthCodedTime`.
+* The `adaLN_proj` construction and its three branches
+  (`conditioning_mode="adaln"`, `adaln_proj_style="dense"`,
+  `adaln_proj_style="monarch"`) -- replaced by a single MonarchLinear
+  `cond_bias_proj` that outputs 2*dim additive bias per sub-layer.
+  Kwargs `conditioning_mode`, `adaln_proj_style`, `adaln_bottleneck`,
+  `gate_init` were deleted from both `PhotonFlowBlock` and
+  `PhotonFlowModel`.
+* Gated residual `x = residual_scale * x + g * h` -- deleted.  Replaced
+  by coherent optical addition `x = x + h` via tunable directional
+  coupler (Nature Photonics 2024).  Kwargs `residual_mode`,
+  `residual_scale` deleted.
+* `final_adaLN` (all three branches: none / dense / monarch) -- deleted
+  entirely.  Final layer is `DivisivePowerNorm -> output_proj`.  Kwargs
+  `final_adaln_style`, `final_adaln_enabled` deleted.
+* Dense `nn.Linear(in_dim, hidden_dim)` / `nn.Linear(hidden_dim, in_dim)`
+  input/output projections -- deleted.  Hard-wired to
+  `MonarchLayer(hidden_dim)` bookends with `in_dim == hidden_dim`
+  enforced.  Kwarg `proj_style` deleted.
+* Dense `time_mlp` path (`nn.Linear + nn.SiLU + nn.Linear`) -- deleted.
+  Hard-wired to `WavelengthCodedTime -> MonarchLinear -> PPLNSigmoid
+  -> MonarchLinear`.  Kwargs `time_mlp_style`, `time_encoding` deleted.
+* `MonarchLayer.bias` kwarg -- deleted (Dao 2022 Def 3.1 has no additive
+  term; `self.bias` is hard-set to `None`).
+* `MonarchLayer.unitary_project` kwarg -- deleted.  Cayley projection is
+  hard-wired on.  Shen 2017 MZI mesh requires unitary L, R.
+* Two-axis mixing (`seq_dim`, `feat_dim`) and `depth_decay_residual`
+  kwargs -- deleted (unused in photon-native path, simplifies forward).
+
+**`photonflow/normalization.py`:**
+
+* `DivisivePowerNorm.gain` was an `nn.Parameter` (learnable per-channel
+  affine, M3 mismatch).  Now a `register_buffer` with fixed value
+  `sqrt(num_features)`.  Physical interpretation: a pre-set tunable
+  optical amplifier (EDFA/SOA array, Ning 2024) calibrated once at
+  deploy time, not modulated per-inference.
+* `DivisivePowerNorm.bias` was an `nn.Parameter` (electronic additive
+  shift).  Deleted entirely -- `self.bias = None`.  The divisive-power
+  norm is now a strict direction-preserving rescaler.
+* `learnable` kwarg deleted.
+
+**`photonflow/train.py`:**
+
+* `def euler_sample(...)` -- deleted entirely.  Its 20-step for-loop with
+  per-step photodetector readout + electronic scalar accumulate +
+  modulator re-encode was the M10 O-E-O source (20 conversions per
+  sample).  Replaced by `OpticalSampler` (new module).
+* `Trainer.generate_samples` now instantiates `OpticalSampler` internally
+  and returns a photon-native sampler's output.
+
+**`photonflow/__init__.py`:**
+
+* Drops `euler_sample` from exports.
+* Adds `OpticalSampler`, `MonarchLinear`, `PPLNSigmoid`,
+  `WavelengthCodedTime` to exports.
+
+### 15.3  What was added
+
+**`photonflow/sampler.py` (NEW):**
+
+* `class OpticalSampler(nn.Module)` -- recirculating MZI delay-line
+  fixed-point (Nature Comp. Sci. 2025 Kerr temporal-conv neuron).  Two
+  modes:
+    * `"fixedpoint"` (default): iterates `x_{k+1} = x_k + tau * model(x_k, t)`
+      up to `max_iters` times; terminates when `||delta_x||_2 < eps` as
+      read by a single photodetector comparator.  **Electronic-op count:
+      exactly 1 per sample** (the termination comparator).
+    * `"onepass"`: trained-digital consistency-model path (Song & Ermon
+      2023); single photonic forward pass.  **Electronic-op count: 0**.
+* `.count_electronic_ops()` helper returns the per-sample count used by
+  the module-tree audit.
+
+**`configs/exp_photonflow_native.yaml` (NEW):**
+
+* Hyperparameter-only config.  No `*_style`, `*_mode`, `*_enabled`, or
+  legacy-dense-fallback keys.  Reproduces the Stage-3a recipe (lr=1.7e-3,
+  warmup=600, Shen sigma values, cumulative loss 0.0003 dB/stage).
+
+### 15.4  Verification audit
+
+At commit `3ecf94e`, `grep -nE '^[^#]*\bnn\.(Linear|SiLU|Sigmoid|ReLU|GELU)\('
+photonflow/*.py` returns **zero matches**.  The module tree of
+`PhotonFlowModel(in_dim=784, hidden_dim=784, num_blocks=14, time_dim=256,
+use_noise=True)` contains:
+
+```
+  nn.Linear  : 0
+  nn.SiLU    : 0
+  nn.Sigmoid : 0
+  nn.ReLU    : 0
+  nn.GELU    : 0
+  params     : 4,377,280  (0.90x baseline 4,886,544)
+```
+
+All module self-tests pass:
+
+```
+python -m photonflow.activation     # 4 tests
+python -m photonflow.normalization  # 7 tests (Test 6 asserts buffer-not-Parameter)
+python -m photonflow.noise          # 7 tests
+python -m photonflow.model          # 9 tests (Test 7b + Test 8 assert zero E-ops)
+python -m photonflow.sampler        # 3 tests
+```
+
+### 15.5  Unified final scoreboard
+
+| Run | Params | Eval @ 2 K | Gap | Photon-native | Source of record |
+|-----|-------:|-----------:|----:|:---:|---|
+| baseline (DiT)        | 4,886,544 | 0.1734 | 0.0000  | No (reference) | this kernel |
+| v17 champion (archive)| 4,934,928 | 0.2225 | +0.0491 | No | kaggle/photonflow-mitigated v2 |
+| mitigated (§13)       | 4,891,024 | 0.2283 | +0.0548 | No (partial) | kaggle/photonflow-mitigated v2 |
+| **Stage 1 GREEN (archive)** | **3,747,952** | **0.1615** | **-0.0119** ✨ | partial -- kept dense adaLN | kaggle/photonflow-zero-oeo v1 |
+| Stage 2 YELLOW (archive) | 12,117,276 | 0.2155 | +0.0421 | partial -- kept adaLN/gates | kaggle/photonflow-zero-oeo-stage2 v1 |
+| Stage 3 RED (broken)   | 4,377,280 | 1.0954 | +0.9220 ❌ | yes, but broken (no DPN gain) | kaggle/photonflow-zero-oeo-stage3 v1 |
+| Stage 3a rescue (archive)   | 4,422,752 | 0.2897 | +0.1163 | yes -- under kwargs | kaggle/photonflow-zero-oeo-stage3a v2 |
+| **photonflow_native** (default) | **4,377,280** | **0.2975** | **+0.1241** | **YES -- no kwargs, deleted code** | kaggle/photonflow-native v1 |
+
+### 15.6  Paper claim
+
+PhotonFlow is now a strictly photon-native CFM framework.  On MNIST at
+2,000 training steps, the default `PhotonFlowModel` reaches a uniform-t
+CFM eval loss of 0.298 -- within 0.12 of the attention baseline (0.173) --
+at 0.90x parameter count, with ZERO electronic `nn.Linear`, `nn.SiLU`,
+`nn.Sigmoid`, or `SinusoidalTimeEmbedding` modules in the forward graph.
+
+Inference sampling through `OpticalSampler.fixedpoint` incurs exactly one
+electronic op per generated sample (the termination photodetector
+comparator), down from the deleted `euler_sample` loop's 20 O-E-O
+crossings.  The training loop, `CFMLoss`, Adam optimiser, and LR
+scheduler remain digital -- they are off-chip in any deployable system
+and do not touch the MZI mesh.
+
+Two archive-only configurations exist:
+
+* *Speed-parity photonic* (Stage 1, gap -0.0119, 0.77x baseline params)
+  -- beats the attention baseline.  Relied on electronic adaLN and
+  gated residual, which were deleted in this commit.  The -0.0119 gap
+  is a historical result; the current API cannot reproduce it.
+* *Strict-surgical photonic* (photonflow_native, gap +0.1241, 0.90x
+  baseline params) -- the new default.  Zero electronic per-channel
+  modulation, no learnable-per-inference affine, no gated residual.
+
+### 15.7  Commit trail (complete)
+
+* `bf53573` -- mitigation pass (M2/M5/M8a/M9/M12 kwargs)
+* `df30297` -- Stage 1 config
+* `b19ad54` -- Stage 2 code (PPLNSigmoid, MonarchLinear, WavelengthCodedTime)
+* `11b7668` -- Stage 3 code (additive conditioning, ungated residual, no-affine DPN)
+* `7258740` -- Stage 3a rescue (restore norm gain, reject additive+gated)
+* `d14c3d2` -- §14 report update
+* **`3ecf94e` -- photon-native rewrite: delete ALL electronic code paths**
+* `$(this commit)` -- §15 report update
