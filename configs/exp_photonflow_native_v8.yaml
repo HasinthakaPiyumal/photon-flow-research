@@ -1,0 +1,82 @@
+# exp_photonflow_native_v8.yaml
+# PhotonFlow photon-native v8 -- Track C: combined A+B + orthogonal init.
+#
+# Best shot at gap < 0.05.  Combines ALL training and architectural
+# improvements from v6 (Track A) and v7 (Track B):
+#
+# Architecture (from v7):
+#   - cond_bias_hidden=64 (4x wider bottleneck)
+#   - Block-index sinusoidal encoding (per-block identity)
+#   - learnable_absorber_alpha=true (per-block SA tuning)
+#
+# Training (from v6):
+#   - 10K steps (2.5x v4/v5 duration)
+#   - Logit-normal timestep sampling (Esser et al. 2024, SD3)
+#   - EMA decay=0.9999 (Karras et al. 2024)
+#   - Velocity direction loss weight=0.5 (FasterDiT, Yao 2024)
+#
+# Plus:
+#   - monarch_init=orthogonal (Saxe, McClelland & Ganguli 2013):
+#     QR-orthogonal init makes deep Monarch chains depth-independent
+#     during training.  Cayley projection preserves orthogonality
+#     constraint.  This is the theoretical lever for closing the last
+#     ~0.01 gap in deep structured linear networks.
+#
+# Predicted gap: 0.03-0.05 (best photon-native achievable).
+# All ops remain strictly photonic -- zero O-E-O conversions.
+
+experiment:
+  name: exp_photonflow_native_v8
+  description: "Combined: v7 arch + v6 training (10K, logit-normal, EMA, direction loss) + ortho init"
+
+model:
+  type: photonflow
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 7
+  time_dim: 576
+  use_noise: false
+  sigma_s: 0.0
+  sigma_t: 0.0
+  shot_signal_dependent: false
+  monarch_init: orthogonal
+  adaln_init_std: 0.5
+  num_monarch_factors: 3
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: true
+  mean_center_norm: false
+  phase_noise_sigma: 0.0
+  cumulative_loss_db_per_stage: 0.0003
+  cond_bias_hidden: 64
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 10000
+  warmup_steps: 2000
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 2000
+  sample_every: 1000
+  sample_steps: 20
+  seed: 42
+  time_sampling: logit_normal
+  logit_normal_mean: 0.0
+  logit_normal_std: 1.0
+  direction_loss_weight: 0.5
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: true
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_photonflow_native_v8

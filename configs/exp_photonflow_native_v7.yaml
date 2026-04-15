@@ -1,0 +1,77 @@
+# exp_photonflow_native_v7.yaml
+# PhotonFlow photon-native v7 -- Track B: richer conditioning architecture.
+#
+# Same training schedule as v5 (4K steps, uniform sampling, no EMA)
+# for apples-to-apples architecture comparison.  Architecture changes:
+#
+#   1. cond_bias_hidden=64 (was 16 in v5):
+#      MonarchLinear(576, 64) -> PPLNSigmoid -> MonarchLinear(64, 2*784)
+#      4x wider bottleneck gives the time-to-bias MLP more capacity to
+#      learn a nonlinear mapping.  Every op photonic.
+#
+#   2. Block-index sinusoidal encoding (new code in PhotonFlowBlock):
+#      Fixed buffer added to t_emb before cond_bias_proj.  Each block
+#      gets a unique conditioning signature.  Photonically a pre-set
+#      wavelength offset on the time waveguide (fixed MRM).  Zero extra
+#      parameters.
+#
+#   3. learnable_absorber_alpha=true:
+#      SaturableAbsorber alpha becomes a per-block trainable parameter.
+#      Still maps to graphene waveguide (just the absorption coefficient
+#      is optimised during training, fixed at inference).
+#
+# Predicted gap: 0.04-0.06 (arch improvements vs v5's ~0.07).
+
+experiment:
+  name: exp_photonflow_native_v7
+  description: "v5 + wider cond_bias(64) + block-index encoding + learnable alpha"
+
+model:
+  type: photonflow
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 7
+  time_dim: 576
+  use_noise: false
+  sigma_s: 0.0
+  sigma_t: 0.0
+  shot_signal_dependent: false
+  monarch_init: random
+  adaln_init_std: 0.5
+  num_monarch_factors: 3
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: true
+  mean_center_norm: false
+  phase_noise_sigma: 0.0
+  cumulative_loss_db_per_stage: 0.0003
+  cond_bias_hidden: 64
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 4000
+  warmup_steps: 1200
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 2000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_photonflow_native_v7

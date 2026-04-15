@@ -321,8 +321,16 @@ class PhotonFlowBlock(nn.Module):
         self._stage1 = 2 * self.block_index
         self._stage2 = 2 * self.block_index + 1
 
+        # Block-index embedding: fixed sinusoidal encoding of block position.
+        # Photonically realised as a pre-set wavelength bias on the time
+        # waveguide (fixed MRM setting, no extra electronic op).
+        self.register_buffer(
+            "_block_emb",
+            self._make_block_embedding(block_index, time_dim),
+        )
+
         # ---- Two-axis mixing (optional, photonic via per-axis MZI meshes) ----
-        self.use_two_axis = seq_dim is not None and feat_dim is not None
+        self.use_two_axis = (seq_dim is not None and feat_dim is not None)
         if self.use_two_axis:
             if seq_dim * feat_dim != dim:
                 raise ValueError(
@@ -411,6 +419,32 @@ class PhotonFlowBlock(nn.Module):
         )
         self.monarch_r2 = MonarchLayer(dim, **_monarch_kwargs)
 
+    @staticmethod
+    def _make_block_embedding(idx: int, dim: int) -> torch.Tensor:
+        """Fixed sinusoidal encoding of block index (like positional encoding).
+
+        Photonically realised as a pre-set wavelength bias on the time
+        waveguide — a fixed MRM (microring resonator modulator) setting
+        that requires no electronic computation at inference time.
+
+        Args:
+            idx: Zero-based block index.
+            dim: Embedding dimension (must match time_dim).
+
+        Returns:
+            (dim,) tensor with the sinusoidal block embedding.
+        """
+        pe = torch.zeros(dim)
+        pos = torch.tensor([float(idx)])
+        half = dim // 2
+        div = torch.exp(
+            torch.arange(0, dim, 2, dtype=torch.float32)
+            * (-math.log(10000.0) / dim)
+        )
+        pe[0::2] = torch.sin(pos * div)
+        pe[1::2] = torch.cos(pos * div[:half])
+        return pe  # (dim,)
+
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -424,7 +458,9 @@ class PhotonFlowBlock(nn.Module):
         # `cond_bias_proj` is either a single MonarchLinear (linear, simple)
         # or a 2-layer MonarchLinear -> PPLNSigmoid -> MonarchLinear bottleneck
         # (nonlinear, richer time mapping).  Both are photonic.
-        cb = self.cond_bias_proj(t_emb)        # (B, 2*dim)
+        # Block-index embedding provides per-block identity (fixed buffer,
+        # pre-set wavelength offset — no electronic computation).
+        cb = self.cond_bias_proj(t_emb + self._block_emb)  # (B, 2*dim)
         cb1, cb2 = cb.chunk(2, dim=-1)
 
         # Sub-layer 1: norm -> bias -> (spatial-mix + feature-mix | flat Monarch)

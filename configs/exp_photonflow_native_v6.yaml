@@ -1,0 +1,74 @@
+# exp_photonflow_native_v6.yaml
+# PhotonFlow photon-native v6 -- Track A: training improvements only.
+#
+# Architecture identical to v5 (factor=3, 7 blocks, time_dim=576,
+# cond_bias_hidden=16, no noise).  All changes are training-side:
+#
+#   1. 10K steps (2.5x v5's 4K) -- v4 descent rate at 4K suggested
+#      model hadn't converged.
+#   2. Logit-normal timestep sampling (Esser et al. 2024, SD3):
+#      t = sigmoid(N(0, 1)).  Focuses training on harder intermediate
+#      timesteps where velocity prediction is hardest.
+#   3. EMA (decay 0.9999, Karras et al. 2024) -- shadow weights for
+#      evaluation typically improve eval loss 5-10%.
+#   4. Velocity direction loss (Yao et al. 2024, FasterDiT):
+#      weight=0.5.  Cosine similarity term forces correct flow
+#      direction, reported 7x training speedup.
+#
+# Predicted gap: 0.04-0.06 (from v5's predicted 0.06-0.08).
+
+experiment:
+  name: exp_photonflow_native_v6
+  description: "v5 architecture + 10K steps + logit-normal + EMA + direction loss"
+
+model:
+  type: photonflow
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 7
+  time_dim: 576
+  use_noise: false
+  sigma_s: 0.0
+  sigma_t: 0.0
+  shot_signal_dependent: false
+  monarch_init: random
+  adaln_init_std: 0.5
+  num_monarch_factors: 3
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: false
+  mean_center_norm: false
+  phase_noise_sigma: 0.0
+  cumulative_loss_db_per_stage: 0.0003
+  cond_bias_hidden: 16
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 10000
+  warmup_steps: 2000
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 2000
+  sample_every: 1000
+  sample_steps: 20
+  seed: 42
+  time_sampling: logit_normal
+  logit_normal_mean: 0.0
+  logit_normal_std: 1.0
+  direction_loss_weight: 0.5
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: true
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_photonflow_native_v6
