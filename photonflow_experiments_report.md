@@ -1307,3 +1307,63 @@ E_cb576 = combo v3 A_ref = combo v4 A_ref).  Explored lever dimensions:
 
 **Paper-defensible photon-native result**: gap +0.0930 at 5.11 M params
 (1.046× baseline), strict zero-OEO in the forward graph.
+
+### 16.10  Combo v5 -- BOUNDED gamma sweep (`photonflow-native-combo5`)
+
+Combo v4 showed the naive `w(t)=γ/(1-t+ε)` weight diverges at t→1.
+Commit `97690ee` added an upper-clamp `loss_weight_gamma_max` to
+`photonflow/train.py::CFMLoss`.  Combo v5 is the first **stable** test
+of time-weighted CFM loss on photon-native architecture.
+
+| Variant | Overrides | Eval @ 2K | Gap | Train loss final | Outcome |
+|---|---|---:|---:|---:|---|
+| baseline | DiT attention (reference) | 0.1734 | 0.0000 | n/a | reference |
+| A_ref | (control E_cb576) | 0.2664 | +0.0930 | 0.267 | reproduces v2/v3/v4 ceiling |
+| U_g2_c10 | `γ=2.0, γ_max=10.0` | 0.2858 | +0.1124 | 1.86 (weighted) | stable but worse |
+| V_g5_c10 | `γ=5.0, γ_max=10.0` | 0.2677 | +0.0943 | 2.44 (weighted) | tied with A_ref |
+| W_g2_c3 | `γ=2.0, γ_max=3.0` | 0.2665 | +0.0931 | 0.78 (weighted) | **tied with A_ref** |
+| X_g1_c10_mild | `γ=1.0, γ_max=10.0 + logit-normal std=0.5` | 0.3126 | +0.1392 | 0.36 | diverged at 1500 |
+
+**Findings**:
+- The `loss_weight_gamma_max` clamp fix **works**: no training blow-ups.
+  All five variants trained stably to 2K steps with finite weighted loss.
+- W_g2_c3 (tight cap=3) and V_g5_c10 (loose cap=10) both land at gap
+  +0.093, **statistically indistinguishable from A_ref**.  Time-weighted
+  loss is neither helpful nor harmful at this architectural ceiling.
+- X (mild logit-normal + bounded gamma) eval bounced up at step 1500
+  (0.3374 → 0.3397), suggesting training-signal/eval-signal mismatch --
+  mild logit-normal biases the model to the t=[0.3, 0.7] band while eval
+  is uniform-t.
+
+**Combo v5 winner**: **A_ref / W_g2_c3 tie** at +0.0930.  Bounded gamma
+is framework-correct but the photon-native ceiling is truly architectural,
+not loss-side.
+
+### 16.11  Combo v6 -- last untested photon-native levers (`photonflow-native-combo6`)
+
+After 5 sweeps and 25+ variants hitting +0.093, three levers in the
+combo kernel surface remain untried:
+
+1. **`monarch_init="dct"`** --- Fourier-basis Monarch init (Wang Monarch
+   Mixer 2023; eq. DCT-II).  Combo v3 tested this but with cb_hidden=64;
+   combo v6 tests it on the combo v2 winning base (cb_hidden=576) where
+   adaLN-Zero-equivalent init is strong.  Photonically principled: a
+   DCT basis IS a wavelength-demux mesh (AWGR).
+2. **`use_noise=True`** with Shen-2017 shot/thermal levels
+   (`sigma_s=0.001, sigma_t=0.005`).  All combo v1-v5 variants had
+   noise off.  Restoring paper-central noise regularization may
+   improve generalization.
+3. **`num_monarch_factors=4` with `num_blocks=5`** -- deeper MZI stacks
+   trading block count for factor count (preserves param budget).
+   Combo v3 N tested factor=4 at num_blocks=5 with cb_hidden=64;
+   combo v6 retests under cb_hidden=576.
+
+Variants:
+- `A_ref` (control, E_cb576 winner)
+- `Y_dct` -- `monarch_init="dct"` (under cb_hidden=576)
+- `Z_noise` -- `use_noise=True, sigma_s=0.001, sigma_t=0.005`
+- `AA_f4b5` -- `num_monarch_factors=4, num_blocks=5`
+- `BB_noise_dct` -- Y + Z combined (speculative)
+
+**Stop condition**: if no variant beats +0.05 OR +0.093, declare
+PHOTON_NATIVE_CEILING final and stop iterating.

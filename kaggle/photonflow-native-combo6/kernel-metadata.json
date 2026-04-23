@@ -1,0 +1,13 @@
+{
+  "id": "hasinthakapiyumal/photonflow-native-combo6",
+  "title": "PhotonFlow native combo6",
+  "code_file": "photonflow_native_combo6.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": []
+}
