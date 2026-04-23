@@ -1,0 +1,57 @@
+% fig_traj.tex -- uniform-t CFM eval loss trajectory
+% Included via \input{fig_traj} inside a figure environment.
+\begin{tikzpicture}
+\begin{axis}[
+  width=\columnwidth,
+  height=4.6cm,
+  xlabel={Optimiser step},
+  ylabel={Eval loss},
+  xlabel style={font=\footnotesize},
+  ylabel style={font=\footnotesize},
+  tick label style={font=\scriptsize},
+  xmin=400, xmax=2100,
+  ymin=0.15, ymax=0.40,
+  xtick={500,1000,1500,2000},
+  ytick={0.15, 0.20, 0.25, 0.30, 0.35, 0.40},
+  grid=major, grid style={gray!18, dashed},
+  legend style={font=\scriptsize, draw=gray!35, fill=white, fill opacity=0.9,
+                text opacity=1,
+                at={(0.98,0.97)}, anchor=north east, row sep=-2pt},
+  legend cell align=left,
+  title={\scriptsize MNIST CFM, 2\,k steps, seed 42},
+  title style={yshift=-2pt},
+]
+
+% apples-to-apples target bands (+0.05 and +0.10 above baseline plateau 0.1734)
+\addplot [domain=400:2100, samples=2, dashed, draw=green!55, thick, forget plot]
+  {0.2234};
+\addplot [domain=400:2100, samples=2, dashed, draw=red!55, thick, forget plot]
+  {0.2734};
+
+\node[font=\scriptsize\itshape, anchor=west, text=green!55!black]
+  at (axis cs:520, 0.2288) {$+0.05$ target};
+\node[font=\scriptsize\itshape, anchor=west, text=red!55!black]
+  at (axis cs:520, 0.2790) {$+0.10$ target};
+
+% baseline trajectory
+\addplot [color=pfNorm, thick, mark=*, mark size=1.4pt]
+  coordinates {(500,0.2000) (1000,0.1817) (1500,0.1757) (2000,0.1734)};
+\addlegendentry{Baseline (DiT attention)}
+
+% PhotonFlow A_ref trajectory
+\addplot [color=pfPhotonic, thick, mark=square*, mark size=1.3pt]
+  coordinates {(500,0.3804) (1000,0.3303) (1500,0.3075) (2000,0.2687)};
+\addlegendentry{PhotonFlow ($A_\mathrm{ref}$)}
+
+% final-point gap annotation
+\node[font=\scriptsize, anchor=west, text=pfPhotonic!80!black]
+  at (axis cs:1520, 0.298) {\textbf{gap $+0.0953$}};
+\draw[pharrow, pfPhotonic!80!black]
+  (axis cs:1900,0.293) -- (axis cs:1995,0.272);
+
+% "still descending" annotation, placed below legend to avoid overlap
+\node[font=\scriptsize\itshape, anchor=east, text=pfPhotonic!80!black]
+  at (axis cs:1980, 0.325) {still descending};
+
+\end{axis}
+\end{tikzpicture}

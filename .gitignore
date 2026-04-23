@@ -62,3 +62,4 @@ paper/pdf-pages/
 temp/
 kaggle/
 MISMATCHES.md
+.claude/scheduled_tasks.lock

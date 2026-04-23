@@ -1,0 +1,97 @@
+% fig_method.tex -- PhotonFlow system architecture (photon-native block diagram)
+% Included via \input{fig_method} inside a figure* environment.
+\begin{tikzpicture}[
+  font=\scriptsize,
+  every node/.style={align=center},
+  rowsep/.style={yshift=#1},
+]
+
+% =================================================================
+% ROW 1 -- forward-pass spine (top)
+% =================================================================
+\node[pfbox=pfPhotonic, minimum width=11mm]               (in)   at (0.0, 0)    {Input\\$\mathbb{R}^{784}$};
+\node[pfbox=pfPhotonic, minimum width=13mm, right=2.5mm of in]   (ib)   {Monarch\\bookend};
+\node[pfbox=pfPhotonic, minimum width=11mm, right=2.5mm of ib]   (b1)   {Block\\$1$};
+\node[pfbox=pfPhotonic, minimum width=11mm, right=2.5mm of b1]   (b2)   {Block\\$2$};
+\node[right=2.5mm of b2]                                   (dots) {$\cdots$};
+\node[pfbox=pfPhotonic, minimum width=11mm, right=2.5mm of dots] (b7)   {Block\\$7$};
+\node[pfbox=pfNorm,     minimum width=11mm, right=2.5mm of b7]   (fn)   {Final\\DPN};
+\node[pfbox=pfPhotonic, minimum width=13mm, right=2.5mm of fn]   (ob)   {Monarch\\bookend};
+\node[pfbox=pfPhotonic, minimum width=11mm, right=2.5mm of ob]   (out)  {Output\\$\mathbb{R}^{784}$};
+
+\foreach \a/\b in {in/ib, ib/b1, b1/b2, b2/dots, dots/b7, b7/fn, fn/ob, ob/out}
+  \draw[pharrow] (\a) -- (\b);
+
+% =================================================================
+% ROW 2 -- time-conditioning side-channel
+% =================================================================
+\node[font=\scriptsize\itshape, anchor=west] at (-0.1, -1.35) {\textbf{Time conditioning (shared):}};
+\node[pfbox=pfWave, minimum width=22mm]             (wct)  at (2.8, -1.75)  {WCT$(t)$ $+$ block offset};
+\node[pfbox=pfPhotonic, minimum width=16mm, right=2.5mm of wct]  (ml1)  {Monarch\\Linear};
+\node[pfbox=pfNonlin,   minimum width=10mm, right=2.5mm of ml1]  (ppln) {PPLN};
+\node[pfbox=pfPhotonic, minimum width=16mm, right=2.5mm of ppln] (ml2)  {Monarch\\Linear};
+\node[font=\scriptsize, right=2mm of ml2]                        (cb)   {$(\mathbf{c}_1,\mathbf{c}_2)$};
+
+\draw[pharrow] (wct)  -- (ml1);
+\draw[pharrow] (ml1)  -- (ppln);
+\draw[pharrow] (ppln) -- (ml2);
+\draw[pharrow] (ml2)  -- (cb);
+
+% dashed arrow indicating bias is injected into every block
+\draw[pharrow, dashed, pfWave!75]
+  (cb.north) to[bend left=14] ($ (b2.south) +(0, -1mm) $);
+\node[font=\scriptsize\itshape, text=pfWave!65!black, anchor=west]
+  at (13.2, -1.75) {$\to$ each block};
+
+% =================================================================
+% ROW 3 -- inset: zoom of one PhotonFlowBlock  (first sub-layer)
+% =================================================================
+\node[font=\scriptsize\itshape, anchor=west] at (-0.1, -2.95) {\textbf{PhotonFlowBlock (zoom):}};
+
+\node[pfbox=pfNorm,     minimum width=10mm]        (dpn)  at (2.8, -3.4)  {DPN};
+\node[font=\scriptsize, right=1.8mm of dpn]        (pl1)  {$\oplus\mathbf{c}_1$};
+\node[pfbox=pfPhotonic, minimum width=12mm, right=1.8mm of pl1] (mL)   {Mon.\ $L$};
+\node[pfbox=pfPhotonic, minimum width=12mm, right=1.8mm of mL]  (mR)   {Mon.\ $R$};
+\node[pfbox=pfNonlin,   minimum width=9mm,  right=1.8mm of mR]  (sa)   {SA};
+\node[pfbox=pfNoise, dashed, minimum width=12mm, right=1.8mm of sa] (nz)  {noise};
+\node[pfbox=pfPhotonic, minimum width=14mm, right=1.8mm of nz]  (res)  {coh.\ add};
+
+\draw[pharrow] (dpn) -- (pl1); \draw[pharrow] (pl1) -- (mL);
+\draw[pharrow] (mL)  -- (mR);  \draw[pharrow] (mR) -- (sa);
+\draw[pharrow] (sa)  -- (nz);  \draw[pharrow] (nz) -- (res);
+
+% second sub-layer (same row shape, below)
+\node[pfbox=pfNorm,     minimum width=10mm]        (dpn2) at (2.8, -4.35) {DPN};
+\node[font=\scriptsize, right=1.8mm of dpn2]       (pl2)  {$\oplus\mathbf{c}_2$};
+\node[pfbox=pfPhotonic, minimum width=12mm, right=1.8mm of pl2] (mL2)  {Mon.\ $L'$};
+\node[pfbox=pfNonlin,   minimum width=9mm,  right=1.8mm of mL2] (sa2)  {SA};
+\node[pfbox=pfPhotonic, minimum width=12mm, right=1.8mm of sa2] (mR2)  {Mon.\ $R'$};
+\node[pfbox=pfNoise, dashed, minimum width=12mm, right=1.8mm of mR2]  (nz2) {noise};
+\node[pfbox=pfPhotonic, minimum width=14mm, right=1.8mm of nz2] (res2) {coh.\ add};
+
+\draw[pharrow] (dpn2) -- (pl2); \draw[pharrow] (pl2) -- (mL2);
+\draw[pharrow] (mL2)  -- (sa2); \draw[pharrow] (sa2) -- (mR2);
+\draw[pharrow] (mR2)  -- (nz2); \draw[pharrow] (nz2) -- (res2);
+
+% skip from first sub-layer output into second sub-layer input
+\draw[pharrow, dashed, pfPhotonic!55]
+  (res.south) to[bend left=12] (dpn2.north);
+
+% =================================================================
+% ROW 4 -- deleted electronic primitives  (clearly separated)
+% =================================================================
+\node[font=\scriptsize\itshape, anchor=west] at (-0.1, -5.4)
+      {\textbf{Deleted electronic code paths:}};
+
+\node[pfbox=pfElec, dashed, minimum width=15mm]   (d1) at (3.2, -5.8)
+      {\textcolor{pfElec}{$\times$}\,\texttt{nn.Linear}};
+\node[pfbox=pfElec, dashed, minimum width=14mm, right=2mm of d1] (d2)
+      {\textcolor{pfElec}{$\times$}\,\texttt{nn.SiLU}};
+\node[pfbox=pfElec, dashed, minimum width=25mm, right=2mm of d2] (d3)
+      {\textcolor{pfElec}{$\times$}\,SinusoidalTimeEmbed};
+\node[pfbox=pfElec, dashed, minimum width=27mm, right=2mm of d3] (d4)
+      {\textcolor{pfElec}{$\times$}\,adaLN scale/shift/gate};
+\node[pfbox=pfElec, dashed, minimum width=24mm, right=2mm of d4] (d5)
+      {\textcolor{pfElec}{$\times$}\,gated residual $g\!\cdot\!h$};
+
+\end{tikzpicture}

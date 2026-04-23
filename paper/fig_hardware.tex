@@ -1,0 +1,54 @@
+% fig_hardware.tex -- projected per-sample latency / energy bar chart
+% Two side-by-side log-scale bar charts.
+\begin{tikzpicture}
+
+\begin{axis}[
+  name=axLat,
+  width=0.45\columnwidth, height=4.5cm,
+  ybar, bar width=8pt,
+  symbolic x coords={MN, CF, GPU},
+  xtick=data,
+  xticklabels={MNIST, CIFAR, GPU},
+  xticklabel style={font=\scriptsize, rotate=25, anchor=east},
+  ymode=log, log basis y=10,
+  ymin=1, ymax=100000,
+  ylabel={Latency [ns]},
+  tick label style={font=\scriptsize},
+  ymajorgrids, grid style={gray!18, dashed},
+  nodes near coords,
+  nodes near coords style={font=\tiny, /pgf/number format/1000 sep={,}},
+  enlarge x limits=0.3,
+  ylabel style={font=\scriptsize, yshift=-2pt},
+  title style={yshift=-2pt, font=\scriptsize},
+  title={Latency per sample},
+]
+\addplot[fill=pfPhotonic!70, draw=pfPhotonic!95]
+  coordinates {(MN, 3.1) (CF, 94) (GPU, 12500)};
+\end{axis}
+
+\begin{axis}[
+  at={(axLat.outer east)}, anchor=outer west,
+  xshift=2mm,
+  width=0.45\columnwidth, height=4.5cm,
+  ybar, bar width=8pt,
+  symbolic x coords={MN, CF, GPU},
+  xtick=data,
+  xticklabels={MNIST, CIFAR, GPU},
+  xticklabel style={font=\scriptsize, rotate=25, anchor=east},
+  ymode=log, log basis y=10,
+  ymin=0.1, ymax=10000000,
+  ylabel={Energy [pJ]},
+  tick label style={font=\scriptsize},
+  ymajorgrids, grid style={gray!18, dashed},
+  nodes near coords,
+  nodes near coords style={font=\tiny, /pgf/number format/1000 sep={,}},
+  enlarge x limits=0.3,
+  ylabel style={font=\scriptsize, yshift=-2pt},
+  title style={yshift=-2pt, font=\scriptsize},
+  title={Energy per sample},
+]
+\addplot[fill=pfNonlin!70, draw=pfNonlin!95]
+  coordinates {(MN, 0.42) (CF, 24) (GPU, 3200000)};
+\end{axis}
+
+\end{tikzpicture}

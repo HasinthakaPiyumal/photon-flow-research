@@ -117,7 +117,13 @@
       "Bash(pdftotext \"D:/hackathons/photon-flow-research/paper/lit-review/pdfs/Deep learning with coherent nanophotonic circuits - 2017 \\(1\\).pdf\" /tmp/shen2017.txt)",
       "Bash(python3)",
       "Bash(.venv/Scripts/python photonflow/model.py)",
-      "Bash(.venv/Scripts/python -m photonflow.model)"
+      "Bash(.venv/Scripts/python -m photonflow.model)",
+      "Bash(grep *)",
+      "Bash(../tools/tectonic.exe -X compile --keep-logs --outdir . paper-latex.tex)",
+      "Bash(mkdir -p pdf-pages/build-v1)",
+      "Bash(/c/poppler/poppler-24.08.0/Library/bin/pdftoppm.exe -r 150 paper-latex.pdf pdf-pages/build-v1/page -png)",
+      "Read(//c/Users/hasin/.kaggle/**)",
+      "Bash(kaggle --version)"
     ]
   },
   "enableAllProjectMcpServers": true,

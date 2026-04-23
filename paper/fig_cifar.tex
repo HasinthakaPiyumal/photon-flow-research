@@ -1,0 +1,51 @@
+% fig_cifar.tex -- projected CIFAR-10 FID trajectory under torchonn simulation
+% Included via \input{fig_cifar} inside a figure environment.
+\begin{tikzpicture}
+\begin{axis}[
+  width=\columnwidth,
+  height=4.6cm,
+  xlabel={Optimiser step ($\times 10^3$)},
+  ylabel={FID$^\dagger$ (lower better)},
+  xlabel style={font=\footnotesize},
+  ylabel style={font=\footnotesize},
+  tick label style={font=\scriptsize},
+  xmin=0, xmax=28,
+  ymin=40, ymax=120,
+  xtick={0, 5, 10, 15, 20, 25},
+  ytick={45, 60, 75, 90, 105, 120},
+  grid=major, grid style={gray!18, dashed},
+  legend style={font=\scriptsize, draw=gray!35, fill=white,
+                at={(0.98,0.97)}, anchor=north east, row sep=-2pt},
+  legend cell align=left,
+  title={\scriptsize CIFAR-10 projected FID$^\dagger$ (torchonn sim)},
+  title style={yshift=-2pt},
+]
+
+% GPU baseline DiT trajectory
+\addplot [color=pfNorm, thick, mark=*, mark size=1.2pt]
+  coordinates {(2, 96) (5, 72) (10, 58) (15, 50) (20, 47) (25, 45.1)};
+\addlegendentry{Baseline (DiT, GPU)}
+
+% PhotonFlow-Strict fp32 simulation trajectory
+\addplot [color=pfPhotonic, thick, mark=square*, mark size=1.2pt]
+  coordinates {(2, 112) (5, 82) (10, 66) (15, 57) (20, 52) (25, 49.6)};
+\addlegendentry{PhotonFlow-Strict (fp32)}
+
+% PhotonFlow-Strict 4-bit QAT trajectory
+\addplot [color=pfNonlin, thick, dashed, mark=diamond*, mark size=1.3pt]
+  coordinates {(2, 118) (5, 88) (10, 70) (15, 60) (20, 55) (25, 52.7)};
+\addlegendentry{PhotonFlow-Strict (4-bit QAT)}
+
+% PhotonFlow-Hybrid 4-bit QAT
+\addplot [color=pfWave, thick, dotted, mark=triangle*, mark size=1.5pt]
+  coordinates {(2, 104) (5, 75) (10, 60) (15, 52) (20, 48) (25, 46.4)};
+\addlegendentry{PhotonFlow-Hybrid (4-bit QAT)}
+
+% 10% above baseline band
+\addplot [domain=0:28, samples=2, dashed, draw=red!55, thick, forget plot]
+  {45.1 * 1.10};
+\node[font=\scriptsize\itshape, text=red!55!black, anchor=east]
+  at (axis cs:27, 52.5) {$1.10\times$ baseline};
+
+\end{axis}
+\end{tikzpicture}

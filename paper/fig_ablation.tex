@@ -1,0 +1,56 @@
+% fig_ablation.tex -- four-variant ablation gap deltas
+% Included via \input{fig_ablation} inside a figure environment.
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.98\columnwidth,
+  height=4.9cm,
+  ybar,
+  bar width=10pt,
+  xlabel={Training-recipe variant},
+  ylabel={Gap vs.\ baseline},
+  xlabel style={font=\footnotesize},
+  ylabel style={font=\footnotesize},
+  tick label style={font=\scriptsize},
+  ymin=0, ymax=0.28,
+  ytick={0, 0.05, 0.10, 0.15, 0.20, 0.25},
+  symbolic x coords={Ref, Logit, DirLoss, Ortho},
+  xtick=data,
+  xticklabels={PhotonFlow\\-Strict (ref), Logit-normal\\timestep, Direction\\loss, Orthogonal\\init},
+  xticklabel style={rotate=18, anchor=east, align=center, font=\tiny},
+  nodes near coords,
+  nodes near coords style={font=\scriptsize, /pgf/number format/fixed,
+                           /pgf/number format/precision=4},
+  every node near coord/.append style={yshift=1pt},
+  grid=major, grid style={gray!18, dashed},
+  enlarge x limits=0.18,
+  title={\scriptsize Ablation sweep (2\,000 steps, seed 42)},
+  title style={yshift=-2pt},
+]
+
+% architectural ceiling band 0.08 -- 0.10
+\fill[gray!18] (axis cs:Ref, 0.08) rectangle (axis cs:Ortho, 0.10);
+
+% reference line at +0.05 target
+\addplot[sharp plot, dashed, thick, red!55, forget plot]
+  coordinates {(Ref, 0.05) (Ortho, 0.05)};
+
+% bars (one plot per colour, so the colours render distinctly)
+\addplot[fill=pfNonlin!70, draw=pfNonlin!90]
+  coordinates {(Ref, 0.0953)};
+\addplot[fill=pfWave!80, draw=pfWave!90]
+  coordinates {(Logit, 0.1144)};
+\addplot[fill=gray!40, draw=gray!60]
+  coordinates {(DirLoss, 0.0953)};
+\addplot[fill=pfElec!80, draw=pfElec!95]
+  coordinates {(Ortho, 0.2465)};
+
+% ceiling label
+\node[font=\scriptsize\itshape, anchor=west, text=gray!55!black]
+  at (axis cs:Ref, 0.115) {architectural ceiling};
+
+% +0.05 target label
+\node[font=\scriptsize\itshape, anchor=east, text=red!55!black]
+  at (axis cs:Ortho, 0.038) {$+0.05$ target};
+
+\end{axis}
+\end{tikzpicture}
