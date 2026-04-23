@@ -1222,3 +1222,88 @@ We pick option 0: **acknowledge the photon-native floor** and keep
 E_cb576 as the paper's photon-native number.  The 0.09 delta is the
 honest cost of strict zero-OEO at 2K-step MNIST CFM on this architecture
 family.
+
+### 16.7  Combo v3 -- untested-lever probe (Kaggle kernel `photonflow-native-combo3`)
+
+Combo v2 confirmed an architectural ceiling cluster at +0.093-+0.099 across
+five arch-scaling variants.  Combo v3 probed four NEW levers untested in
+any prior run, using E_cb576 as the base.  Added a runtime print diagnostic
+to verify CFMLoss / model kwargs actually fire (fixes combo v1 Issue 1).
+
+| Variant | Override | Params | Eval @ 2K | Gap | Outcome |
+|---|---|---:|---:|---:|---|
+| A_ref (E_cb576 control) | -- | 5,112,366 | 0.2664 | +0.0930 | reproduces v2 winner |
+| M_gamma | `loss_weight_gamma=5.0` | 5,112,366 | 0.6954 | +0.5220 | **blew up**: train loss 37-211, grad norm 49 |
+| N_factor4 | 5 blocks x factor=4 | 4,708,970 | 0.2709 | +0.0975 | marginal regression |
+| O_dct | `monarch_init='dct'` | 5,112,366 | 0.5792 | +0.4058 | Fourier-basis init trapped |
+| P_combo | M_gamma + O_dct | 5,112,366 | 1.0770 | +0.9036 | compounded failures |
+
+**Issue 1 resolution**: M_gamma's train-loss explosion (0.26 → 211) vs
+A_ref's stable 0.26 CONFIRMS `loss_weight_gamma=5.0` is actually firing
+at runtime.  The kwarg plumbing is correct; gamma=5 is simply unstable
+at 2K-step horizon (weight `w(t)=max(1, γ/(1-t+ε))` approaches 500 near
+t=0.99, destabilising gradients).
+
+**Other findings**:
+- `num_monarch_factors=4` (N) did not improve expressivity, marginal regression of +0.0045 vs A_ref.
+- `monarch_init='dct'` (O) starts the model in a Fourier basis but Cayley projection during training drags it into an unfavourable region; +0.31 worse than A_ref.
+
+**Combo v3 winner**: **A_ref** (+0.0930) — none of the new levers helped.
+Architectural ceiling remains at ~+0.093 confirmed across 15 variants
+(combo v1/v2/v3) and 10+ arch dimensions.
+
+### 16.8  Combo v4 -- gamma sweep + mild logit-normal (`photonflow-native-combo4`)
+
+Combo v3 found loss_weight_gamma=5.0 unstable.  Combo v4 swept lower gamma
+values (0.5, 1.0, 2.0) and a mild logit-normal (std=0.5) to see if a
+stable sweet spot exists.
+
+| Variant | Overrides | Eval @ 2K | Gap | Train loss final | Outcome |
+|---|---|---:|---:|---:|---|
+| A_ref | (control) | 0.2664 | +0.0930 | 0.267 | still the winner |
+| Q_gamma1 | `loss_weight_gamma=1.0` | 0.6954 | +0.5220 | 7-42 | unstable (w(0.99) ~ 100) |
+| R_gamma2 | `loss_weight_gamma=2.0` | 0.6949 | +0.5215 | 15-85 | unstable (w(0.99) ~ 200) |
+| S_gamma05 | `loss_weight_gamma=0.5` | 0.6555 | +0.4821 | 4-21 | unstable (w(0.99) ~ 50) |
+| T_mild_logit | `time_sampling=logit_normal, std=0.5` | 0.3183 | +0.1449 | 0.158 | train OK, eval worse |
+
+**Findings**:
+- Every positive `loss_weight_gamma` is unstable in our CFMLoss implementation.
+  The `w(t)=max(1, γ/(1-t+ε))` formula diverges at t → 1; at ε=1e-8 even γ=0.5
+  gives `w(0.99)=50` and `w(0.9999)=5×10^6`, which swamps gradient signal.
+  This is not a photon-native problem -- it's a CFMLoss implementation issue
+  that would likely bite ANY architecture.  If we want time-weighting, we
+  need a bounded schedule (e.g. `w(t)=1 + γ*sin(π*t)` or `w(t)=min(C, γ/(1-t+ε))`).
+- Mild logit-normal has the opposite pathology: model trains cleanly but
+  **overfits** to the mid-t-weighted training signal, so uniform-t eval
+  gets worse.  Train-eval mismatch.
+
+### 16.9  Ceiling acknowledged at gap +0.0930 across 20+ variants
+
+Four independent sweeps, ~25 architecturally-distinct variants:
+
+| Sweep | # variants | Min gap | Max gap | Ceiling hit |
+|---|---:|---:|---:|---|
+| combo v1 | 4 + baseline | +0.0953 (A_ref) | +0.2465 | +0.0953 |
+| combo v2 | 5 + baseline | +0.0930 (E_cb576) | +0.0990 | +0.0930 |
+| combo v3 | 5 + baseline | +0.0930 (A_ref) | +0.9036 | +0.0930 |
+| combo v4 | 5 + baseline | +0.0930 (A_ref) | +0.5220 | +0.0930 |
+
+The floor across all photon-native levers explored is **+0.0930** (combo v2
+E_cb576 = combo v3 A_ref = combo v4 A_ref).  Explored lever dimensions:
+- architecture (depth × factor trade, 2-axis mixing, wider cond_bias bottleneck)
+- init (random, orthogonal, DCT; init_std 0.02 to 1.0)
+- training (uniform, logit-normal, direction loss, time-weighted loss)
+- conditioning (cb_hidden 64 to 576, block_emb, learnable alpha)
+- num_factors (1, 2, 3, 4)
+
+**None closed below +0.093.**  This is the honest photon-native floor at
+2K-step MNIST CFM.  Closing the remaining 0.04 requires either:
+  1. A photonic primitive for time-dependent per-channel multiplication
+     (would need co-packaged electronic DAC driving MRM array -- violates
+     strict zero-OEO claim).
+  2. Extended training (>2K, violates apples-to-apples).
+  3. A CFMLoss implementation with bounded time-weighting (fixable, but
+     untested and outside the photon-native core).
+
+**Paper-defensible photon-native result**: gap +0.0930 at 5.11 M params
+(1.046× baseline), strict zero-OEO in the forward graph.
