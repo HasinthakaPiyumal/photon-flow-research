@@ -28,10 +28,10 @@ model:
   time_dim: 256
   adaln_init_std: 0.02
 
-  # --- Fallback knobs ---
-  cond_bias_hidden: 8                # #1 -- photonic 2-layer bottleneck
-  learnable_absorber_alpha: true     # #2 -- per-block SA tuning
-  monarch_init: orthogonal           # #3 -- Saxe 2013 init
+  # --- Fallback knobs (disabled for bisect-run to isolate kernel error) ---
+  cond_bias_hidden: 0                # was 8
+  learnable_absorber_alpha: false    # was true
+  monarch_init: random               # was orthogonal
 
   # --- Stage-2 noise kwargs (match known-good) ---
   use_noise: true
