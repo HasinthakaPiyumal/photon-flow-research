@@ -1,0 +1,77 @@
+# exp_photonflow_framework_v1.yaml
+# First iteration on the photonflow-framework kernel.
+#
+# Background: zero_oeo_v2 (byte-faithful Stage-2 re-run) regressed to gap
+# +0.1264 because the current model.py dropped several kwargs Stage-2 was
+# trained with (gate_init, adaln_bottleneck, absorber_intensity_mode).
+# We cannot restore gate_init without code change, but three *config-level*
+# knobs should recover most of the lost gain:
+#   (1) cond_bias_hidden=8     -- PPLNSigmoid bottleneck in cond_bias_proj
+#                                  (photonic, 2-layer)
+#   (2) learnable_absorber_alpha=true  -- per-block trainable SA slope
+#                                  (photonic via thermal tuning)
+#   (3) monarch_init=orthogonal        -- Saxe 2013, depth-independent
+#                                  training of deep unitary chains
+#
+# Forward graph remains strictly photon-native; zero O-E-O conversions at
+# inference. Target: gap <= 0.05.
+
+experiment:
+  name: exp_photonflow_framework_v1
+  description: "PhotonFlow framework v1: combo knobs (cond_bias_hidden=8, learnable_alpha, orthogonal)"
+
+model:
+  type: photonflow
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 14
+  time_dim: 256
+  adaln_init_std: 0.02
+
+  # --- Fallback knobs ---
+  cond_bias_hidden: 8                # #1 -- photonic 2-layer bottleneck
+  learnable_absorber_alpha: true     # #2 -- per-block SA tuning
+  monarch_init: orthogonal           # #3 -- Saxe 2013 init
+
+  # --- Stage-2 noise kwargs (match known-good) ---
+  use_noise: true
+  sigma_s: 0.001
+  sigma_t: 0.005
+  shot_signal_dependent: true
+  phase_noise_sigma: 0.005
+  cumulative_loss_db_per_stage: 0.0003
+
+  # --- Other ---
+  num_monarch_factors: 1
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  mean_center_norm: false
+
+data:
+  dataset: mnist
+  batch_size: 128
+  root: ./data
+  num_workers: 2
+
+training:
+  lr: 1.7e-3
+  total_steps: 2000
+  warmup_steps: 600
+  lr_schedule: cosine
+  grad_clip: 1.0
+  checkpoint_every: 1000
+  sample_every: 500
+  sample_steps: 20
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+output_dir: outputs/exp_photonflow_framework_v1
