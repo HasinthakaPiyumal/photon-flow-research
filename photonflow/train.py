@@ -183,8 +183,13 @@ class CFMLoss(nn.Module):
             similarity) loss term. 0.0 = disabled. Default 0.0.
             Recommended: 0.5 (FasterDiT, Yao et al. 2024).
         loss_weight_gamma (float): Gamma for time-dependent loss weighting.
-            w(t) = max(1, gamma/(1-t+eps)). 0.0 = disabled. Default 0.0.
-            Recommended: 5.0 (arXiv 2511.16599, 2025).
+            w(t) = clamp(gamma/(1-t+eps), min=1.0, max=loss_weight_gamma_max).
+            0.0 = disabled. Default 0.0.  Recommended: 5.0 (arXiv 2511.16599, 2025).
+        loss_weight_gamma_max (float): UPPER bound on the time-weight w(t).
+            Without a ceiling, w(t) diverges as t→1 (e.g. at t=0.999, γ=0.5
+            gives w=500 which destabilises gradients -- confirmed empirically
+            in combo v3/v4 where γ∈{0.5,1,2,5} all caused training to explode).
+            Default 10.0 (meaning w(t) is capped at 10x unit weight).
     """
 
     def __init__(
@@ -196,6 +201,7 @@ class CFMLoss(nn.Module):
         curriculum_transition_frac: float = 0.6,
         direction_loss_weight: float = 0.0,
         loss_weight_gamma: float = 0.0,
+        loss_weight_gamma_max: float = 10.0,
     ) -> None:
         super().__init__()
         self.sigma_min = sigma_min
@@ -205,6 +211,7 @@ class CFMLoss(nn.Module):
         self.curriculum_transition_frac = curriculum_transition_frac
         self.direction_loss_weight = direction_loss_weight
         self.loss_weight_gamma = loss_weight_gamma
+        self.loss_weight_gamma_max = float(loss_weight_gamma_max)
 
     def forward(
         self,
@@ -283,11 +290,16 @@ class CFMLoss(nn.Module):
 
         # --- Loss computation ---
         if self.loss_weight_gamma > 0:
-            # Time-dependent weighting (arXiv 2511.16599):
-            # w(t) = max(1, gamma/(1-t+eps)) — emphasize hard timesteps
+            # Time-dependent weighting (arXiv 2511.16599) WITH upper clamp:
+            # w(t) = clamp(gamma/(1-t+eps), min=1.0, max=loss_weight_gamma_max)
+            # The upper bound is essential -- without it, w(t) diverges at
+            # t→1 causing gradient explosion (observed in combo v3/v4 where
+            # γ∈{0.5, 1, 2, 5} all blew up training).
             per_sample_mse = ((v_pred - target) ** 2).mean(dim=-1)  # (B,)
             w = torch.clamp(
-                self.loss_weight_gamma / (1.0 - t + 1e-5), min=1.0
+                self.loss_weight_gamma / (1.0 - t + 1e-5),
+                min=1.0,
+                max=self.loss_weight_gamma_max,
             )  # (B,)
             loss = (w * per_sample_mse).mean()
         else:
