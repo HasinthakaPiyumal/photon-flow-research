@@ -123,7 +123,10 @@
       "Bash(mkdir -p pdf-pages/build-v1)",
       "Bash(/c/poppler/poppler-24.08.0/Library/bin/pdftoppm.exe -r 150 paper-latex.pdf pdf-pages/build-v1/page -png)",
       "Read(//c/Users/hasin/.kaggle/**)",
-      "Bash(kaggle --version)"
+      "Bash(kaggle --version)",
+      "Bash(rm -rf kaggle/photonflow-native-combo2/output)",
+      "Bash(mkdir -p kaggle/photonflow-native-combo2/output)",
+      "Bash(.venv/Scripts/kaggle.exe kernels *)"
     ]
   },
   "enableAllProjectMcpServers": true,

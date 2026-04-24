@@ -63,3 +63,5 @@ temp/
 kaggle/
 MISMATCHES.md
 .claude/scheduled_tasks.lock
+
+paper/lit-review/**/*.png
