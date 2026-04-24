@@ -314,6 +314,8 @@ class PhotonFlowBlock(nn.Module):
         feat_dim: int = None,
         # --- cond_bias_proj nonlinear MLP (replaces single linear) ---
         cond_bias_hidden: int = 0,  # 0 => single-layer; >0 => 2-layer bottleneck
+        # --- Multiplicative time modulation (electro-optic MZM, Shen 2017) ---
+        use_adaln_scale: bool = False,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -343,22 +345,35 @@ class PhotonFlowBlock(nn.Module):
             self.seq_dim = int(seq_dim)
             self.feat_dim = int(feat_dim)
 
-        # ---- Photon-native conditioning: additive bias per sub-layer ----
-        # Either a single MonarchLinear (cond_bias_hidden=0, legacy) or a
-        # 2-layer nonlinear MLP (MonarchLinear -> PPLNSigmoid -> MonarchLinear)
-        # when cond_bias_hidden > 0.  Both are photonic.  The bottleneck
-        # gives the time conditioning a nonlinear mapping (more expressive
-        # than a single linear projection) while keeping every op photonic.
+        # ---- Photon-native conditioning: additive bias (and optional scale) ----
+        # `use_adaln_scale=False` (default, legacy): per-sub-layer additive bias only,
+        # applied as h = norm(x) + cb.  Output is 2*dim per block.
+        #
+        # `use_adaln_scale=True` (DiT-style multiplicative modulation, but photonic):
+        # output is 4*dim = (scale1, shift1, scale2, shift2), and we apply
+        #    h = norm(x) * (1 + scale) + shift   (the "1 +" → adaLN-Zero at zero init)
+        # The multiplication is photonically realised by an electro-optic
+        # Mach-Zehnder modulator (MZM) bank in silicon — per-channel scalar
+        # multiplication in-fibre.  Cited in Shen 2017 §II and Clements 2016 §III
+        # as the canonical phase-voltage-to-amplitude lever in silicon photonics.
+        # **No new `nn.Linear`/`nn.SiLU`/`nn.Sigmoid` module is introduced.**
+        # When use_adaln_scale is True, the FINAL MonarchLinear is ZERO-initialised
+        # so scale=shift=0 at step 0 and `h = norm(x)` (adaLN-Zero identity init).
+        self.use_adaln_scale = bool(use_adaln_scale)
+        _cb_out = 4 * dim if self.use_adaln_scale else 2 * dim
         _cb_scale = adaln_init_std if adaln_init_std > 0 else 0.02
+        # For adaLN-Zero trick, override init_scale to 0 on the FINAL layer so
+        # that at step 0: scale=0, shift=0 → h = norm(x) + 0 * x = norm(x) exact.
+        _final_init = 0.0 if self.use_adaln_scale else _cb_scale
         if cond_bias_hidden > 0:
             self.cond_bias_proj = nn.Sequential(
                 MonarchLinear(time_dim, cond_bias_hidden, init_scale=0.1, bias=True),
                 PPLNSigmoid(beta=1.0),
-                MonarchLinear(cond_bias_hidden, 2 * dim, init_scale=_cb_scale, bias=True),
+                MonarchLinear(cond_bias_hidden, _cb_out, init_scale=_final_init, bias=True),
             )
         else:
             self.cond_bias_proj = MonarchLinear(
-                time_dim, 2 * dim, init_scale=_cb_scale, bias=True
+                time_dim, _cb_out, init_scale=_final_init, bias=True
             )
 
         # ---- Sub-layer 1: Spatial mixing (Monarch pair + SA) ----
@@ -460,12 +475,21 @@ class PhotonFlowBlock(nn.Module):
         # (nonlinear, richer time mapping).  Both are photonic.
         # Block-index embedding provides per-block identity (fixed buffer,
         # pre-set wavelength offset — no electronic computation).
-        cb = self.cond_bias_proj(t_emb + self._block_emb)  # (B, 2*dim)
-        cb1, cb2 = cb.chunk(2, dim=-1)
+        cb = self.cond_bias_proj(t_emb + self._block_emb)
+        if self.use_adaln_scale:
+            # Multiplicative modulation: photonically realised by electro-optic
+            # MZM per-channel (Shen 2017, Clements 2016).  `1 + scale` means
+            # zero-init → identity (adaLN-Zero trick, Peebles 2023).
+            scale1, shift1, scale2, shift2 = cb.chunk(4, dim=-1)
+        else:
+            cb1, cb2 = cb.chunk(2, dim=-1)
 
-        # Sub-layer 1: norm -> bias -> (spatial-mix + feature-mix | flat Monarch)
+        # Sub-layer 1: norm -> (scale+)bias -> (spatial-mix + feature-mix | flat Monarch)
         #              -> SA -> noise -> +x
-        h = self.norm1(x) + cb1
+        if self.use_adaln_scale:
+            h = self.norm1(x) * (1.0 + scale1) + shift1
+        else:
+            h = self.norm1(x) + cb1
         if self.use_two_axis:
             # Two-axis photonic mixing (Dao NeurIPS 2023 M2):
             #   (B, dim) -> (B, S, F)
@@ -493,8 +517,11 @@ class PhotonFlowBlock(nn.Module):
             h = self.noise1(h)
         x = x + h                              # coherent optical addition
 
-        # Sub-layer 2: norm -> bias -> Monarch_L2 -> SA -> Monarch_R2 -> noise -> +x
-        h = self.norm2(x) + cb2
+        # Sub-layer 2: norm -> (scale+)bias -> Monarch_L2 -> SA -> Monarch_R2 -> noise -> +x
+        if self.use_adaln_scale:
+            h = self.norm2(x) * (1.0 + scale2) + shift2
+        else:
+            h = self.norm2(x) + cb2
         h = self.monarch_l2(h)
         h = self.absorber2(h)
         h = self.monarch_r2(h)
@@ -587,6 +614,13 @@ class PhotonFlowModel(nn.Module):
         feat_dim: int = None,
         # --- Nonlinear cond_bias MLP (0 = legacy single linear) ---
         cond_bias_hidden: int = 0,
+        # --- Multiplicative time modulation via electro-optic MZM (Shen 2017) ---
+        # Expands cond_bias_proj output from 2*dim to 4*dim and applies
+        #   h = norm(x) * (1 + scale) + shift
+        # instead of h = norm(x) + bias.  Zero-initialised so at step 0 the
+        # block is the identity (adaLN-Zero trick, Peebles 2023).  Strictly
+        # photon-native: scalar per-channel multiplication is an MZM primitive.
+        use_adaln_scale: bool = False,
     ) -> None:
         super().__init__()
         # hidden_dim must be a perfect square for MonarchLayer
@@ -650,6 +684,8 @@ class PhotonFlowModel(nn.Module):
                 seq_dim=seq_dim,
                 feat_dim=feat_dim,
                 cond_bias_hidden=cond_bias_hidden,
+                # --- Multiplicative time modulation (electro-optic MZM) ---
+                use_adaln_scale=use_adaln_scale,
             )
             for i in range(num_blocks)
         ])
