@@ -1,0 +1,104 @@
+# exp2_mnist_5m_200k.yaml
+# PhotonFlow S_scale_4M on MNIST @ 200K iterations (5M photon-native champion)
+#
+# Source: kaggle/photonflow-scale-sweep `S_scale_4M` variant (photonflow_experiments_report.md §26).
+# At baseline-parity parameter count (4.87 M, vs DiT baseline's 4.89 M = 1.00x),
+# this architecture reaches gap +0.0629 at 2,000 steps.  This 200K-step config
+# is the long-horizon follow-up to see how much further the gap closes.
+#
+# Architecture (adaLN-scale electro-optic MZM multiplicative time modulation):
+#   - MonarchLayer(num_factors=3, init='random'): stacked Cayley-unitary MZI mesh
+#     (Shen 2017 / Clements 2016) with off-identity init to escape
+#     the Hardt-Ma 2017 identity-near basin.
+#   - SaturableAbsorber(alpha=0.8, leaky_slope=0.05, learnable=True):
+#     graphene waveguide with 5% linear bypass past tanh saturation.
+#   - DivisivePowerNorm (microring + SOA fixed-gain buffer):
+#     photon-native L2 normalization; no mean-centering.
+#   - PPLNSigmoid: PPLN chi^2 nonlinearity (eLight 2026) inside cond_bias_proj.
+#   - WavelengthCodedTime: AWGR wavelength-routing time encoder (Moss 2022).
+#   - use_adaln_scale=True, cond_bias_hidden=576:
+#     Multiplicative time modulation  h = norm(x) * (1 + scale) + shift
+#     via electro-optic MZM bank (Shen 2017 §II, Clements 2016 §III).
+#     Zero-initialised -> identity at step 0 (adaLN-Zero trick, Peebles 2023).
+#
+# Training (K_bs256 winning recipe):
+#   - bs=256, lr=3e-3, warmup=300/200000 (0.15%), cosine decay to 0.
+#   - Adam (no weight decay -- adaLN-Zero provides implicit regularisation).
+#   - plain uniform-t CFMLoss (no logit-normal / direction / time-weighted loss).
+#   - grad_clip=1.0; seed=42.
+#   - Strict zero-OEO at inference (0 nn.Linear/SiLU/Sigmoid/ReLU/GELU in forward graph).
+#
+# Run via: notebooks/03_exp2_photonflow_mnist.ipynb
+
+experiment:
+  name: exp2_photonflow_mnist_5m_200k
+  description: "PhotonFlow S_scale_4M (5M, adaLN-scale) on MNIST @ 200K steps"
+
+model:
+  in_dim: 784
+  hidden_dim: 784
+  num_blocks: 5
+  time_dim: 576
+  num_monarch_factors: 3
+  monarch_init: random
+  adaln_init_std: 0.5
+  absorber_alpha: 0.8
+  absorber_leaky_slope: 0.05
+  learnable_absorber_alpha: true
+  use_noise: false
+  sigma_s: 0.0
+  sigma_t: 0.0
+  shot_signal_dependent: false
+  mean_center_norm: false
+  phase_noise_sigma: 0.0
+  cumulative_loss_db_per_stage: 0.0003
+  cond_bias_hidden: 576
+  use_adaln_scale: true
+  seq_dim: null
+  feat_dim: null
+
+data:
+  dataset: mnist
+  batch_size: 256
+  root: ./data
+  num_workers: 2                # 0 on Windows; 2 elsewhere
+
+training:
+  lr: 3.0e-3                    # K_bs256 winning recipe
+  total_steps: 200000           # 200K iteration long-horizon run
+  warmup_steps: 300             # 0.15% of total, same as K_bs256
+  lr_schedule: cosine           # cosine decay to 0 over total_steps
+  grad_clip: 1.0
+  checkpoint_every: 10000       # 20 checkpoints over 200K
+  sample_every: 5000            # 40 sample grids over 200K
+  sample_steps: 20              # Euler ODE steps for sampling
+  seed: 42
+  time_sampling: uniform
+  direction_loss_weight: 0.0
+  loss_weight_gamma: 0.0
+  loss_weight_gamma_max: 10.0
+  loss_weight_mode: none
+  sigma_data: 0.5
+  logit_normal_mean: 0.0
+  logit_normal_std: 1.0
+  logit_normal_time_shift: 1.0
+  curriculum_transition_frac: 0.6
+
+# EMA disabled (same rationale as K_bs256 @ 2K: 0.9999^200000 is effectively 0
+# after enough steps; but at 200K it becomes more relevant, consider enabling).
+ema:
+  enabled: false
+  decay: 0.9999
+
+qat:
+  enabled: false
+
+sampler:
+  # Photon-native OpticalSampler (fixedpoint MZI delay-line recirculation).
+  # Replaces the deleted legacy `euler_sample`.
+  mode: fixedpoint              # 1 electronic op per sample (termination comparator)
+  tau: null                     # default: 1 / max_iters
+  eps: 1.0e-3
+  max_iters: 20                 # matches sample_steps knob
+
+output_dir: outputs/exp2_photonflow_mnist_5m_200k
