@@ -1,0 +1,13 @@
+{
+  "id": "hasinthakapiyumal/photonflow-exp2-200k",
+  "title": "photonflow exp2 200k",
+  "code_file": "photonflow_exp2_200k.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": []
+}
