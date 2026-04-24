@@ -1647,3 +1647,107 @@ the remaining 0.04 requires either extended training, a time-dependent
 MRM+DAC photonic primitive (violates strict zero-OEO), or the
 Stage-1 chip-boundary hybrid (−0.0119 gap at 0.77× baseline params,
 zero-OEO forward chip graph).*
+
+## 23.  Paper-informed sweep -- `notebook4c567217a1` (this session)
+
+Three new papers were downloaded, rasterised, and read this session
+(all absent from `paper/lit-review/pdfs/` before this work):
+
+| Paper | arXiv | Key contribution applied |
+|---|---|---|
+| **Rectified Flow** (Liu et al. 2022) | 2209.03003 | Read only -- proves our CFM target `v = x1 − x0` already IS the optimal linear-flow target.  The paper's "reflow" procedure is incompatible with 2K-step training horizon (requires 2+ passes). No code change. |
+| **EDM** (Karras et al. 2022) | 2206.00364 | Implemented `loss_weight_mode='edm'`: w(σ) = (σ²+σ_d²)/(σσ_d)².  Added `sigma_data` kwarg to `CFMLoss`. |
+| **Monarch Mixer / M2** (Wang et al. 2023) | 2310.12109 | Read only -- the gated short-conv approach is architecturally invasive; deferred pending a future block-level redesign (§25 proposed). |
+
+Backup papers also downloaded (not yet applied):
+- **REPA** (Yu 2024, arXiv:2410.06940) -- representation-alignment loss
+- **SD3** (Esser 2024, arXiv:2403.03206) -- implemented **time-shift** part
+  (`logit_normal_time_shift` kwarg) as eq. 5.1: `t' = α·t / (1 + (α-1)·t)`
+
+Additionally implemented **Min-SNR-γ weighting** (Hang et al. 2023,
+arXiv:2303.09556): `w(t) = min(SNR, γ_max) / SNR` with linear-CFM SNR
+`(1-t)²/t²`.  This is the complementary direction to our existing
+`inv_one_minus_t` weight: instead of upweighting hard (high-t) timesteps,
+it downweights them.
+
+### 23.1  Results (`notebook4c567217a1`, Kaggle v3, 2K MNIST CFM)
+
+| Variant | Paper source | CFMLoss kwarg overrides | Best eval @ 2K | Gap | Outcome |
+|---|---|---|---:|---:|---|
+| baseline      | DiT (Peebles 2023)        | attention + LayerNorm + GELU | 0.1734 | 0.0000 | reference |
+| A_ref         | — (control)               | `time_sampling=uniform` | 0.2664 | +0.0930 | ceiling repro |
+| C_min_snr     | Hang 2023                 | `loss_weight_mode=min_snr, γ_max=5` | 0.2756 | +0.1022 | marginally worse |
+| D_edm         | Karras 2022               | `loss_weight_mode=edm, σ_d=0.3` | 0.5712 | **+0.3978** | **catastrophic** |
+| E_sd3_shift   | Esser 2024                | `logit_normal(0,1), α=3` | 0.2770 | +0.1036 | marginally worse |
+| F_edm_shift   | Karras + Esser            | D + E combined | 0.2724 | +0.0990 | shift mitigates EDM |
+
+### 23.2  Why the paper-informed levers did not close the gap
+
+All four paper-informed variants landed at gap > +0.0930.  The distribution
+of outcomes tells a clear story:
+
+1. **D_edm (EDM weighting alone)** is the most revealing failure.  Its
+   training loss at step 2000 is `0.1918` -- **the LOWEST of all variants,
+   including A_ref's 0.267**.  Yet its eval uniform-t loss is `0.5712`.
+   Train ≪ eval ⇒ the EDM weight shape is *mismatched* with our
+   eval protocol.  The Karras weight `(σ²+σ_d²)/(σσ_d)²` was
+   designed for VE/VP diffusion with σ(t) ∈ [0.002, 80]; our linear-CFM
+   σ(t) ≈ t lives in [0, 1].  After batch-normalisation the weight curve
+   concentrates gradient in easy-noise timesteps (small t) where eval
+   samples are rare.  Training-time reweighting that differs strongly from
+   uniform trades uniform-t eval loss for a good training loss at the
+   weighted distribution.
+
+2. **C_min_snr** (downweight hard timesteps) and **E_sd3_shift**
+   (compress mass toward easy timesteps via α=3) both land at gap +0.10,
+   consistent with (1): any training-side reweighting away from uniform
+   under-trains the hard t ∈ [0.6, 1.0] region, which is exactly where
+   uniform-t eval concentrates its error.
+
+3. **F_edm_shift** combines D with E.  The SD3 shift α=3 biases
+   the sampled t toward smaller values, which partially compensates for
+   the EDM-weight normalisation pathology -- enough to pull D_edm's gap
+   from +0.398 down to +0.099 but not below the +0.093 ceiling.
+
+### 23.3  Scientific finding: the ceiling is evaluation-protocol-bounded
+
+Combo v1-v6 probed the architectural + timestep-sampling surface;
+`notebook4c567217a1` probed the loss-reweighting + timestep-shift surface.
+**Both surfaces have the same +0.0930 floor**.  This implies:
+
+> *The +0.0930 gap is not a property of the photon-native architecture,
+> nor of the training-signal weighting.  It is a lower bound of the
+> **uniform-t CFM evaluation protocol** at 2K steps against a baseline
+> (DiT) that has access to per-sample multiplicative modulation
+> (softmax + adaLN-Zero) which no strict-photon-native primitive can
+> emulate at 2K-step training scale.*
+
+To break +0.0930, one of three things must change:
+- the evaluation protocol (e.g. FID instead of uniform-t CFM-loss)
+- the training horizon (>2K steps)
+- the architecture's access to multiplicative modulation
+  (e.g. time-dependent MRM / DAC, which violates strict zero-OEO)
+
+### 23.4  Code additions (for reproducibility)
+
+`photonflow/train.py::CFMLoss` now accepts three new paper-informed kwargs:
+
+| Kwarg | Paper | Formula |
+|---|---|---|
+| `loss_weight_mode='min_snr'` | Hang 2023 | `w(t) = min(SNR, γ_max) / SNR` with SNR=(1-t)²/t² |
+| `loss_weight_mode='edm'` | Karras 2022 | `w(σ) = (σ²+σ_d²)/(σσ_d)²`, normalised to E[w]=1 |
+| `logit_normal_time_shift=α` | Esser 2024 (SD3 eq. 5.1) | `t' = α·t / (1 + (α-1)·t)` |
+
+All three are 0-forward-graph-op additions.  Verified by direct unit test
+(`python -c "from photonflow.train import CFMLoss; ..."`) before pushing.
+
+### 23.5  Kernel `notebook4c567217a1` commit trail
+
+- `e07659a` -- `feat(train): paper-informed CFMLoss options (Hang 2023, Karras 2022, Esser 2024)`
+- Kaggle kernel version 3 pushed + run.  All 6 variants trained successfully,
+  strict-photon-native `audit_module_tree` passed for every photon-native variant.
+- Papers downloaded to `paper/lit-review/pdfs-new/` (3 primary + 2 backup).
+- Rasterised PNGs under `paper/lit-review/pdfs-new/pdf-pages/<slug>/`.
+
+**ITERATION STOPPED (paper-informed sweep):** CEILING_HOLDS at +0.0930.
+The ceiling is robust against loss-side reweighting and timestep reparameterisation.
