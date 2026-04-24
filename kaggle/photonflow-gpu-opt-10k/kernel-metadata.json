@@ -1,0 +1,13 @@
+{
+  "id": "hasinthakapiyumal/photonflow-gpu-opt-10k",
+  "title": "photonflow gpu opt 10k",
+  "code_file": "photonflow_gpu_opt_10k.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": []
+}
