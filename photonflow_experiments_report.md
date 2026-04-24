@@ -1751,3 +1751,80 @@ All three are 0-forward-graph-op additions.  Verified by direct unit test
 
 **ITERATION STOPPED (paper-informed sweep):** CEILING_HOLDS at +0.0930.
 The ceiling is robust against loss-side reweighting and timestep reparameterisation.
+
+## 24.  Kernel 1: adaLN-scale (electro-optic MZM) — **CEILING BROKEN**
+
+The paper-informed sweep (§23) confirmed training-side levers don't help,
+reinforcing the §23.3 hypothesis that the ceiling is expressivity-bounded:
+photon-native uses **additive-only** `cond_bias` while DiT uses
+**multiplicative** adaLN-Zero `scale * x + shift + gate * out`.  Kernel 1
+installs the missing multiplicative primitive — photonically realisable
+via electro-optic Mach-Zehnder modulators (MZMs, Shen 2017 §II / Clements
+2016 §III) — and sweeps three `cond_bias_hidden` values.
+
+### 24.1  Code change
+
+`photonflow/model.py` commit `6701f5e`:
+- New kwarg `use_adaln_scale: bool = False` on `PhotonFlowModel` and
+  `PhotonFlowBlock`.
+- When True, `cond_bias_proj` emits `4·dim = (scale1, shift1, scale2, shift2)`
+  instead of `2·dim = (cb1, cb2)`.
+- Per sub-layer: `h = norm(x) * (1 + scale) + shift` replaces `h = norm(x) + cb`.
+- The final `MonarchLinear` is ZERO-initialised so `scale=shift=0` at step 0
+  → block is the identity at init (adaLN-Zero trick, Peebles 2023).
+- Module-tree audit confirms **0 `nn.Linear` / 0 `nn.SiLU` / 0 `nn.Sigmoid`
+  / 0 `nn.ReLU` / 0 `nn.GELU`** in forward graph.  `(1 + scale) * x + shift`
+  is pure tensor arithmetic; per-channel multiplication is the canonical
+  MZM primitive in silicon photonics.
+
+### 24.2  Results (`photonflow-adaln-scale`, Kaggle v1, 2K MNIST CFM)
+
+| Variant | Params | ×baseline | Best eval | Gap | Δ vs A_ref | Outcome |
+|---|---:|---:|---:|---:|---:|---|
+| baseline           | 4,886,544 | 1.00×    | 0.1734 | 0.0000  | — | DiT reference |
+| A_ref              | 5,112,366 | 1.05×    | 0.2664 | +0.0930 | 0.0000 | prior ceiling |
+| G_adaln_s_cb128    | 6,682,830 | 1.37×    | 0.2568 | **+0.0834** | **−0.0096** | **ceiling broken** |
+| H_adaln_s_cb288    | 6,683,950 | 1.37×    | 0.2532 | **+0.0798** | **−0.0132** | **ceiling broken** |
+| **I_adaln_s_cb576**| **6,685,966** | **1.37×** | **0.2444** | **+0.0710** | **−0.0220** | **new best** |
+
+**Every adaLN-scale variant broke the +0.0930 ceiling.**  Improvement is
+monotonic with `cond_bias_hidden` (128 → 288 → 576), consistent with the
+winner-bigger-cb_hidden pattern found in combo v2.
+
+### 24.3  Photon-native + strict zero-OEO verification
+
+`audit_module_tree` passed for every variant (G, H, I).  The forward graph
+contains **zero electronic ops**:
+- `MonarchLayer` → Cayley-unitary MZI mesh (Shen 2017, Clements 2016)
+- `DivisivePowerNorm` with fixed SOA-buffer gain → microring + photodetector feedback
+- `SaturableAbsorber` → graphene waveguide insert
+- `PPLNSigmoid` (in cond_bias_proj and time_mlp) → PPLN χ² nonlinearity
+- `WavelengthCodedTime` → AWGR time encoder
+- **`(1 + scale) * x + shift` → electro-optic MZM bank (NEW PHOTONIC PRIMITIVE USED)**
+- Tensor addition and multiplication are pure arithmetic, not modules.
+
+No `nn.Linear`, `nn.SiLU`, `nn.Sigmoid`, `nn.ReLU`, `nn.GELU`, `nn.LayerNorm`,
+`nn.BatchNorm*`, softmax or mean-centering op exists in the forward path.
+
+### 24.4  Scientific finding: expressivity vs evaluation-protocol
+
+Kernel 1 falsifies the §23.3 hypothesis that the +0.0930 ceiling was
+evaluation-protocol-bounded: uniform-t eval is unchanged, yet gap dropped
+by 24 % (−0.022 on +0.093).  The missing ingredient was **multiplicative
+time modulation**, and adding it photonically (via MZM) is sufficient to
+break the ceiling.  The remaining 0.02-gap-to-target is expected to
+close via training-recipe + data augmentation (Kernel 2 next).
+
+**Param-parity caveat**: I_adaln_s_cb576 is 1.37× baseline.  To get
+closer to parity we could either run the same sweep at cb_hidden=288
+(5.00 M if we restructure the MonarchLinear — pad more aggressively)
+or reduce `num_blocks` from 7 to 5 (saves ~0.25 M per reduced block).
+
+### 24.5  Commit trail
+
+- `6701f5e` — `feat(model): adaLN-scale kwarg (electro-optic MZM modulation)`
+- Kaggle kernel `photonflow-adaln-scale` version 1 pushed + run.  COMPLETE.
+- All variants trained stably.  No NaN / explosion.
+
+**Status**: ceiling broken at +0.0710.  Proceed to Kernel 2 (training-recipe
++ data-augmentation combined) to try to close the remaining 0.021 gap.
