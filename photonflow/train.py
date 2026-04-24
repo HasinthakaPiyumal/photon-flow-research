@@ -202,6 +202,31 @@ class CFMLoss(nn.Module):
         direction_loss_weight: float = 0.0,
         loss_weight_gamma: float = 0.0,
         loss_weight_gamma_max: float = 10.0,
+        # --- Paper-informed additions (commit notebook4c567217a1) ---
+        # loss_weight_mode: which reweighting scheme to apply per-sample.
+        #   "none"              -- no reweighting (default).
+        #   "inv_one_minus_t"   -- original loss_weight_gamma / (1-t+eps) path.
+        #   "min_snr"           -- Hang et al. 2023 "Efficient Diffusion Training
+        #                          via Min-SNR Weighting Strategy" (arXiv 2303.09556).
+        #                          w(t) = clamp(SNR(t), max=γ_max) / SNR(t)
+        #                          where SNR(t) = (1-t)^2 / t^2 for linear CFM.
+        #                          Downweights timesteps with SNR above γ_max
+        #                          (very-low-noise samples) to spread effective
+        #                          gradient budget evenly; training-stable.
+        #   "edm"               -- Karras et al. 2022 "Elucidating the Design
+        #                          Space of Diffusion-Based Generative Models"
+        #                          (arXiv 2206.00364).  w(σ) = (σ²+σ_d²)/(σσ_d)²
+        #                          with σ≈t for linear-CFM.  Normalised to mean 1
+        #                          so training-loss magnitude stays comparable.
+        # sigma_data (float): σ_data for EDM weighting (std of target MNIST images
+        #                     after pre-processing).  Default 0.5 (EDM default).
+        # logit_normal_time_shift (float): SD3 eq. 5.1 time-shift parameter α.
+        #                                  t' = α·t / (1 + (α-1)·t).  α=1 (default) = no shift.
+        #                                  α>1 compresses mass toward t=0 (more easy-noise training).
+        #                                  α<1 compresses mass toward t=1 (more hard-signal training).
+        loss_weight_mode: str = "none",
+        sigma_data: float = 0.5,
+        logit_normal_time_shift: float = 1.0,
     ) -> None:
         super().__init__()
         self.sigma_min = sigma_min
@@ -212,6 +237,10 @@ class CFMLoss(nn.Module):
         self.direction_loss_weight = direction_loss_weight
         self.loss_weight_gamma = loss_weight_gamma
         self.loss_weight_gamma_max = float(loss_weight_gamma_max)
+        # Paper-informed additions:
+        self.loss_weight_mode = loss_weight_mode
+        self.sigma_data = float(sigma_data)
+        self.logit_normal_time_shift = float(logit_normal_time_shift)
 
     def forward(
         self,
@@ -265,6 +294,15 @@ class CFMLoss(nn.Module):
         else:
             t = torch.rand(B, device=device)
 
+        # --- SD3 eq. 5.1 time-axis shift (applies AFTER uniform or logit-normal) ---
+        # t' = α · t / (1 + (α - 1) · t).   α = 1 is the identity map.
+        # Esser 2024 found α ~ 3 at 1024-px SD3 training to be optimal; at MNIST
+        # we don't know the sweet spot, so we leave it as a free kwarg.
+        if self.logit_normal_time_shift != 1.0:
+            a = self.logit_normal_time_shift
+            t = (a * t) / (1.0 + (a - 1.0) * t)
+            t = t.clamp(1e-5, 1.0 - 1e-5)
+
         # --- OT interpolation (Lipman Eq. 22) ---
         t_expand = t[:, None]  # (B, 1) for broadcasting
         if self.sigma_min == 0.0:
@@ -289,7 +327,34 @@ class CFMLoss(nn.Module):
             )
 
         # --- Loss computation ---
-        if self.loss_weight_gamma > 0:
+        if self.loss_weight_mode == "min_snr":
+            # Min-SNR-gamma weighting (Hang et al. 2023, arXiv:2303.09556).
+            # For linear CFM interpolation x_t = (1-t)x0 + t*x1 with x0 ~ N(0,I),
+            # the signal-to-noise ratio is SNR(t) = (1-t)² / t².
+            # The classical min-SNR-γ weight is:
+            #     w(t) = min(SNR(t), γ_max) / SNR(t)
+            # which equals 1 at high SNR (small t, easy denoising) and decays
+            # as γ_max / SNR for large t (hard, high-noise samples that are
+            # otherwise over-weighted).  This is the OPPOSITE of the
+            # inv_one_minus_t weight we tried in combos v3-v5, and is the
+            # form proven to train stably across many diffusion-type models.
+            per_sample_mse = ((v_pred - target) ** 2).mean(dim=-1)  # (B,)
+            snr = ((1.0 - t) ** 2) / (t ** 2 + 1e-6)                # (B,)
+            w = torch.clamp(snr, max=self.loss_weight_gamma_max) / (snr + 1e-6)
+            loss = (w * per_sample_mse).mean()
+        elif self.loss_weight_mode == "edm":
+            # EDM loss weight (Karras et al. 2022, arXiv:2206.00364, §5).
+            # w(σ) = (σ² + σ_data²) / (σ · σ_data)²
+            # For linear-CFM we map σ(t) ≈ t.  To keep the training-loss
+            # magnitude comparable to the unweighted case, we normalise by
+            # the batch mean so E[w] ≈ 1.
+            per_sample_mse = ((v_pred - target) ** 2).mean(dim=-1)  # (B,)
+            sigma = t.clamp(1e-3, 1.0 - 1e-3)                       # avoid σ=0 blow-up
+            sigma_d = max(self.sigma_data, 1e-3)
+            w = (sigma ** 2 + sigma_d ** 2) / ((sigma * sigma_d) ** 2 + 1e-6)
+            w = w / w.mean().clamp(min=1e-3)
+            loss = (w * per_sample_mse).mean()
+        elif self.loss_weight_gamma > 0:
             # Time-dependent weighting (arXiv 2511.16599) WITH upper clamp:
             # w(t) = clamp(gamma/(1-t+eps), min=1.0, max=loss_weight_gamma_max)
             # The upper bound is essential -- without it, w(t) diverges at
