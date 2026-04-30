@@ -3,33 +3,36 @@
 \begin{tikzpicture}
 \begin{axis}[
   width=0.98\columnwidth,
-  height=4.9cm,
+  height=5.6cm,
   ybar,
   bar width=11pt,
   xlabel={\scriptsize Conditioning width $H_c$},
   ylabel={Gap vs.\ baseline},
-  xlabel style={font=\footnotesize},
+  xlabel style={font=\footnotesize, yshift=2pt},
   ylabel style={font=\footnotesize},
   tick label style={font=\scriptsize},
-  ymin=0, ymax=0.12,
-  ytick={0, 0.025, 0.05, 0.075, 0.10},
+  ymin=0, ymax=0.135,
+  ytick={0, 0.025, 0.05, 0.075, 0.10, 0.125},
+  yticklabel style={/pgf/number format/.cd, fixed, precision=3, /tikz/.cd},
   symbolic x coords={Add, H128, H288, H576},
   xtick=data,
-  xticklabels={Additive\\(no MZM), MZM\\$H_c{=}128$, MZM\\$H_c{=}288$, MZM\\$H_c{=}576$},
-  xticklabel style={rotate=18, anchor=east, align=center, font=\tiny},
+  xticklabels={Additive, $H_c{=}128$, $H_c{=}288$, $H_c{=}576$},
+  xticklabel style={rotate=0, anchor=north, font=\scriptsize, yshift=-1pt},
   nodes near coords,
   nodes near coords style={font=\scriptsize, /pgf/number format/fixed,
                            /pgf/number format/precision=4},
   every node near coord/.append style={yshift=1pt},
   grid=major, grid style={gray!18, dashed},
   enlarge x limits=0.18,
+  clip mode=individual,
   title={\scriptsize Ceiling break: adaLN-scale (electro-optic MZM) sweep},
   title style={yshift=-2pt},
 ]
 
-% +0.05 target line
-\addplot[sharp plot, dashed, thick, red!55, forget plot]
-  coordinates {(Add, 0.05) (H576, 0.05)};
+% +0.05 target line drawn with \draw to bypass `nodes near coords`
+% (which would otherwise auto-label both endpoints with "0.05").
+\draw[dashed, thick, red!55]
+  (axis cs:Add, 0.05) -- (axis cs:H576, 0.05);
 
 \addplot[fill=gray!50, draw=gray!75]
   coordinates {(Add, 0.0930)};
@@ -40,10 +43,17 @@
 \addplot[fill=pfPhotonic!95, draw=pfPhotonic!95]
   coordinates {(H576, 0.0710)};
 
-\node[font=\scriptsize\itshape, anchor=west, text=red!55!black]
-  at (axis cs:Add, 0.058) {$+0.05$ target};
-\node[font=\scriptsize\itshape, anchor=south, text=gray!55!black, align=center]
-  at (axis cs:Add, 0.098) {old\\ceiling};
+% +0.05 target annotation -- placed BELOW the dashed line, far left,
+% no overlap with bar value labels or auto-coord labels.
+\node[font=\scriptsize\itshape, anchor=north west, text=red!55!black,
+      inner sep=1pt]
+  at (axis cs:Add, 0.048) {$+0.05$ target};
+
+% "old ceiling" annotation -- placed well ABOVE the additive bar
+% (bar value label at 0.0930 + ymax 0.135 leaves headroom).
+\node[font=\scriptsize\itshape, anchor=south, text=gray!55!black,
+      align=center, inner sep=1pt]
+  at (axis cs:Add, 0.115) {old ceiling};
 
 \end{axis}
 \end{tikzpicture}

@@ -1,37 +1,40 @@
-% fig_progression.tex -- architectural progression across all photon-native milestones
-% All numbers measured on Kaggle (kernels referenced in caption).
+% fig_progression.tex -- architectural progression bar chart.
+% Inline annotations removed to avoid overlap with bar value labels;
+% caption explains the colour coding.  Target line drawn with \draw
+% to avoid the auto-coord-label that `\addplot` triggers.
 \begin{tikzpicture}
 \begin{axis}[
   width=0.98\columnwidth,
-  height=5.0cm,
+  height=6.2cm,
   ybar,
-  bar width=7pt,
+  bar width=10pt,
   xlabel={Architectural milestone},
   ylabel={Gap vs.\ baseline},
-  xlabel style={font=\footnotesize},
+  xlabel style={font=\footnotesize, yshift=2pt},
   ylabel style={font=\footnotesize},
   tick label style={font=\scriptsize},
-  ymin=0, ymax=0.18,
-  ytick={0, 0.025, 0.05, 0.075, 0.10, 0.125, 0.15, 0.175},
+  ymin=0, ymax=0.155,
+  ytick={0, 0.025, 0.05, 0.075, 0.10, 0.125, 0.15},
   symbolic x coords={Cut, WaveOff, LearnAlpha, AddOnly, MZM, K2},
   xtick=data,
-  xticklabels={Strict cut\\(post-delete), +Wavelength\\offset, +Learnable\\$\alpha$+leaky, Additive\\($A_\mathrm{ref}$), +MZM adaLN\\scale (K1), +bs/lr\\recipe (K2)},
-  xticklabel style={rotate=22, anchor=east, align=center, font=\tiny},
+  xticklabels={Strict\\cut, Wave-\\length, Learn.\\$\alpha$, Add.\\$A_{\mathrm{ref}}$, MZM\\(K1), bs/lr\\(K2)},
+  xticklabel style={rotate=0, anchor=north, align=center,
+                    font=\tiny, yshift=-1pt},
   nodes near coords,
   nodes near coords style={font=\scriptsize, /pgf/number format/fixed,
                            /pgf/number format/precision=4},
-  every node near coord/.append style={yshift=1pt},
+  every node near coord/.append style={yshift=1.5pt},
   grid=major, grid style={gray!18, dashed},
-  enlarge x limits=0.06,
-  title={\scriptsize Photon-native progression: deletion \(\to\) ceiling-break \(\to\) target hit},
+  enlarge x limits=0.10,
+  clip mode=individual,
+  title={\scriptsize Photon-native progression: deletion $\to$ ceiling-break $\to$ target hit},
   title style={yshift=-2pt},
 ]
 
-% +0.05 target line
-\addplot[sharp plot, dashed, thick, red!55, forget plot]
-  coordinates {(Cut, 0.05) (K2, 0.05)};
-\node[font=\scriptsize\itshape, anchor=east, text=red!55!black]
-  at (axis cs:K2, 0.058) {$+0.05$ target};
+% +0.05 target line drawn with \draw to bypass `nodes near coords`
+% (which would otherwise auto-label both endpoints with "0.05").
+\draw[dashed, thick, red!55]
+  (axis cs:Cut, 0.05) -- (axis cs:K2, 0.05);
 
 % Strict cut -- red (cost of full photon-native deletion)
 \addplot[fill=pfElec!80, draw=pfElec!95]
@@ -49,17 +52,11 @@
 \addplot[fill=pfNonlin!85, draw=pfNonlin!95]
   coordinates {(K2, 0.0435)};
 
-% annotation: cost of full photon-native (Cut)
-\node[font=\scriptsize\itshape, text=pfElec!75!black, anchor=south, align=center]
-  at (axis cs:Cut, 0.13) {cost of\\full delete};
-
-% annotation: ceiling break
-\node[font=\scriptsize\itshape, text=pfPhotonic!85!black, anchor=south, align=center]
-  at (axis cs:MZM, 0.078) {ceiling\\broken};
-
-% annotation: target hit
-\node[font=\scriptsize\itshape, text=pfNonlin!85!black, anchor=south, align=center]
-  at (axis cs:K2, 0.05) {target hit\\\checkmark};
+% +0.05 target annotation -- single label at far-left, anchored south-west
+% above the dashed line endpoint, no overlap with any bar label.
+\node[font=\scriptsize\itshape, anchor=south west, text=red!55!black,
+      inner sep=1pt]
+  at (axis cs:Cut, 0.052) {$+0.05$ target};
 
 \end{axis}
 \end{tikzpicture}

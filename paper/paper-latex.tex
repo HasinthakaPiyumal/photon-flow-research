@@ -77,10 +77,12 @@ strict-photon-native gap to a DiT-attention baseline to
 $+0.0435$ uniform-$t$ CFM eval at $1.37\times$ baseline parameters
 and $+0.0629$ at exact baseline parity ($4.87$\,M params), passing the
 $+0.05$ apples-to-apples target.  A depth-scaling sweep at the same
-recipe reaches $+0.0418$ at $9.4$\,M and $+0.0365$ at $14.9$\,M, and
-a $200{,}000$-step long-horizon run at baseline parity reaches
-eval $0.1267$ -- a $-0.0057$ \emph{negative} gap against the
-$10\,000$-step DiT baseline.  The breakthrough is the introduction
+recipe reaches $+0.0418$ at $9.4$\,M and $+0.0365$ at $14.9$\,M.  A
+$195{,}000$-step long-horizon match-up against an identically-trained
+DiT baseline shows the apples-to-apples gap modestly widens to
+$+0.0719$ ($0.1595$ photon-native vs $0.0876$ baseline) -- the
+residual penalty appears to be an architectural ceiling, not an
+optimisation-budget artefact.  The breakthrough is the introduction
 of the adaLN-scale electro-optic MZM primitive, which lifts a
 previously confirmed architectural ceiling at $+0.0930$ established
 across $30+$ ablation variants.  An analytic hardware projection
@@ -131,9 +133,13 @@ module-tree audit of the \texttt{torch.nn} tree.  Concretely:
 \item A four-point depth-scaling sweep at fixed recipe showing
       monotone scaling from $+0.0629$ at $4.87$\,M to $+0.0365$ at
       $14.9$\,M (Sec.~\ref{sec:exp-scale}).
-\item A $200\,000$-step long-horizon run at baseline parity reaching
-      eval $0.1267$, a $-0.0057$ \emph{negative} gap against the
-      $10\,000$-step DiT baseline (Sec.~\ref{sec:exp-samples}).
+\item A $195\,000$-step apples-to-apples long-horizon match-up
+      (matched seed, recipe, data order) showing both models train
+      deeply: PhotonFlow-Strict $0.2363\!\to\!0.1595$, baseline
+      $0.1734\!\to\!0.0876$, gap modestly widening from $+0.0629$ to
+      $+0.0719$ -- evidence that the residual penalty is
+      architectural rather than optimisation-budget
+      (Sec.~\ref{sec:exp-samples}).
 \item A first-principles analytic projection of per-sample latency
       ($3.1$\,ns) and energy ($0.42$\,pJ) on a $256$-mode silicon-
       nitride MZI mesh, derived from cited propagation-delay and
@@ -684,36 +690,81 @@ green bar is the K2 target hit at $+0.0435$.}
 
 \subsection{Long-horizon training and sample quality}
 \label{sec:exp-samples}
-The 2{,}000-step horizon used for the apples-to-apples comparison is
-deliberately short.  To verify that PhotonFlow-Strict continues to
-descend past it, we trained the $S_\mathrm{scale\_4M}$ variant
-(baseline-parity, $4.87$\,M params, K2 recipe except
-$\mathrm{warmup}{=}300/200\mathrm{K}$, cosine to zero over the full
-horizon) for $200{,}000$ optimiser steps on Kaggle
-(\texttt{photonflow-exp2-200k}, configuration in
-\texttt{configs/exp2\_mnist\_5m\_200k.yaml}).  At step $200{,}000$ the
-uniform-$t$ CFM eval loss reaches $0.1267$.  Compared against the
-DiT-attention baseline trained for $10{,}000$ steps (eval $0.1324$,
-kernel \texttt{photonflow-gpu-opt-10k} v1, \S\ref{sec:exp-gpuopt}),
-this is a $-0.0057$ \emph{negative} gap -- i.e.\ at this asymmetric
-point the strict-photon-native model has matched and slightly
-exceeded the electronic baseline.  We deliberately do not promote
-this to a headline (the comparison is asymmetric in optimiser steps,
-not FLOPs), but it is direct evidence that the $+0.0435$ apples-
-to-apples gap reported in \S\ref{sec:exp-target} is an early-training
-artefact rather than an architectural floor.
+The $2{,}000$-step horizon used for the apples-to-apples comparison
+is deliberately short.  To probe how the gap evolves at scale, we
+re-ran both PhotonFlow-Strict ($S_\mathrm{scale\_4M}$,
+baseline-parity, $4.87$\,M params, K2 recipe except
+$\mathrm{warmup}{=}300/195\mathrm{K}$, cosine to zero over the full
+horizon, kernel \texttt{photonflow-exp2-200k}) and the DiT-attention
+baseline at $195\,000$ optimiser steps under matched seed and data
+order (Table~\ref{tab:long}).
+
+\begin{table}[tbp]
+\caption{Long-horizon ($195\,000$ steps) eval and gap, both trained
+under matched recipe, seed, and data order.}
+\label{tab:long}
+\centering\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Model} & \textbf{Eval @ $195$\,k} & \textbf{Gap}\\
+\midrule
+Baseline (DiT, $4.89$\,M)        & 0.0876 & $-$ \\
+PhotonFlow-Strict ($4.87$\,M)    & 0.1595 & $+0.0719$ \\
+\midrule
+\multicolumn{1}{@{}l}{Both vs.\ their own $2$\,k checkpoint} & & \\
+$\Delta$ Baseline ($2$\,k $\to 195$\,k)        & $-0.0858$ & $-$ \\
+$\Delta$ PhotonFlow ($2$\,k $\to 195$\,k)      & $-0.0768$ & $-$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both models train deeply: baseline drops from $0.1734$ ($2$\,k) to
+$0.0876$ ($195$\,k), photon-native from $0.2363$ to $0.1595$.  The
+apples-to-apples gap at $195{,}000$ steps is $+0.0719$ -- modestly
+\emph{wider} than the $+0.0629$ measured at $2$\,k for the same
+$S_\mathrm{scale\_4M}$ configuration (Sec.~\ref{sec:exp-scale}).
+Photon-native training is therefore not closing the gap by mere
+optimisation budget; the residual $\sim\!7\%$ uniform-$t$ CFM
+penalty appears to be an architectural ceiling of strict-photon-
+native CFM at this $4.87$\,M parameter scale, separate from the
+$30+$-variant additive ceiling broken in \S\ref{sec:exp-ceiling}.
+We do \emph{not} promote a ``negative-gap'' claim against an
+asymmetric short-baseline reference; the honest long-horizon read
+is that PhotonFlow-Strict halves its $2$\,k gap-from-zero
+($0.2363 \to 0.1595$) at the cost of $\sim\!100{\times}$ more
+optimiser steps, while the baseline halves its own ($0.1734 \to
+0.0876$) under the same compute.
 
 Fig.~\ref{fig:samples} shows uncurated digits sampled from the
-$200$\,k checkpoint via the \texttt{OpticalSampler} (one comparator
-readout per sample, zero electronic ops in the forward graph).  All
-ten digit classes are visible.
+$195$\,k checkpoints (left: PhotonFlow-Strict via the
+\texttt{OpticalSampler}, one comparator readout per sample, zero
+electronic ops in the forward graph; right: baseline via the
+20-step Euler ODE solver).  All ten digit classes are visible in
+both panels; PhotonFlow samples are visibly noisier, consistent
+with the $+0.0719$ eval gap.
 
 \begin{figure}[tbp]
 \centering
-\includegraphics[width=0.82\columnwidth]{photonflow_samples_200k.png}
-\caption{Uncurated MNIST samples from PhotonFlow-Strict at
-step $200{,}000$ (eval loss $0.1267$), generated by the
-\texttt{OpticalSampler}.  All ten digit classes are visible.}
+\begin{minipage}[t]{0.49\columnwidth}
+\centering
+\includegraphics[width=\linewidth]{photonflow_samples_195k.png}\\[-1pt]
+{\scriptsize PhotonFlow-Strict @ $195$\,k\\(eval $0.1595$, gap $+0.0719$)}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\columnwidth}
+\centering
+\includegraphics[width=\linewidth]{baseline_samples_195k.png}\\[-1pt]
+{\scriptsize Baseline DiT @ $195$\,k\\(eval $0.0876$, reference)}
+\end{minipage}
+\caption{Uncurated $8{\times}8$ MNIST sample grids at $195{,}000$
+optimiser steps under matched seed/data.  Left: PhotonFlow-Strict
+($S_\mathrm{scale\_4M}$, $4.87$\,M, photon-native
+\texttt{OpticalSampler}, zero electronic forward-graph ops).
+Right: DiT-attention baseline ($4.89$\,M, 20-step Euler).  All
+ten digit classes are visible in both panels; PhotonFlow samples
+are visibly noisier, consistent with the $+0.0719$ apples-to-apples
+eval gap.}
 \label{fig:samples}
 \end{figure}
 
@@ -832,14 +883,16 @@ gap with no new material requirement.  The K2 recipe lever
 cost.
 
 \textbf{Limits and honest gaps.}  (a) Apples-to-apples is at
-$2$\,k optimiser steps; the baseline plateau by step $1{,}500$
-makes this a fair early-training comparison.  The $200$\,k long-
-horizon run in \S\ref{sec:exp-samples} reaches eval $0.1267$ -- a
-\emph{negative} $-0.0057$ gap against the $10$\,k DiT baseline --
-which suggests the $2$\,k apples-to-apples gap is early-training
-slack rather than an architectural floor, but the comparison is
-asymmetric in optimiser steps and we therefore report it as
-secondary evidence rather than a headline.  (b) CIFAR-10 FID,
+$2$\,k optimiser steps; both models continue to descend at long
+horizon (Sec.~\ref{sec:exp-samples}, $195$\,k matched run) but the
+gap modestly widens from $+0.0629$ to $+0.0719$, indicating the
+residual penalty is architectural rather than budgetary at this
+parameter scale.  Closing this final gap likely requires either
+parameter-scale increase (\S\ref{sec:exp-scale} shows monotone
+gains up to $14.9$\,M) or an additional photon-native primitive --
+softmax-attention's nearest published photonic analogue (the
+all-optical attention chip~\cite{ning2024}) is the obvious next
+target.  (b) CIFAR-10 FID,
 post-QAT FID, and a CelebA-64 scaling study appear in the published
 research plan but were not run within this paper's budget; we
 report them only as next steps and explicitly exclude them from the
@@ -870,11 +923,12 @@ an electro-optic Mach--Zehnder-modulator adaLN-scale primitive,
 which lifted a $30+$-variant architectural ceiling at $+0.0930$
 to $+0.0710$, and an orthogonal training-recipe lever
 (bs/lr scaling) that closed the remaining gap to $+0.0435$ at
-zero forward-graph cost.  A $200\,000$-step long-horizon run at
-baseline parity reached eval $0.1267$, a $-0.0057$ negative gap
-against the $10\,000$-step baseline, indicating that the
-$2\,000$-step gap is early-training slack rather than an
-architectural floor.  We also report a clean negative result:
+zero forward-graph cost.  An apples-to-apples $195\,000$-step match-up at baseline parity
+showed both models continue to train deeply (PhotonFlow
+$0.2363\!\to\!0.1595$, baseline $0.1734\!\to\!0.0876$); the
+apples-to-apples gap modestly widens from $+0.0629$ to $+0.0719$,
+indicating that the residual penalty at the $4.87$\,M scale is
+architectural rather than an optimisation-budget artefact.  We also report a clean negative result:
 GPU-simulator BF16 autocast does not speed up PhotonFlow because
 the Cayley projection forces an FP32 LAPACK fallback -- a
 simulator pathology that disappears on the physical chip, where

@@ -22,11 +22,12 @@
   title style={yshift=-2pt},
 ]
 
-% +0.05 target band
+% +0.05 target band -- annotation pushed clear of the dashed line
 \addplot [domain=400:2100, samples=2, dashed, draw=green!55, thick, forget plot]
   {0.2234};
-\node[font=\scriptsize\itshape, anchor=west, text=green!55!black]
-  at (axis cs:520, 0.2295) {$+0.05$ target};
+\node[font=\scriptsize\itshape, anchor=south west, text=green!55!black,
+      inner sep=1pt]
+  at (axis cs:450, 0.2240) {$+0.05$ target};
 
 % baseline (DiT attention) -- measured
 \addplot [color=pfNorm, thick, mark=*, mark size=1.4pt]
