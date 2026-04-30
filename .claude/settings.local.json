@@ -126,7 +126,8 @@
       "Bash(kaggle --version)",
       "Bash(rm -rf kaggle/photonflow-native-combo2/output)",
       "Bash(mkdir -p kaggle/photonflow-native-combo2/output)",
-      "Bash(.venv/Scripts/kaggle.exe kernels *)"
+      "Bash(.venv/Scripts/kaggle.exe kernels *)",
+      "Bash(pdflatex --version)"
     ]
   },
   "enableAllProjectMcpServers": true,

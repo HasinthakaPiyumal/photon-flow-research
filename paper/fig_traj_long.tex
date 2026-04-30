@@ -1,0 +1,62 @@
+% fig_traj_long.tex -- 195K-step apples-to-apples eval trajectory
+% Real W&B data (costasenumi05-zenlize-labs/photonflow):
+%   PhotonFlow run id q62gznt7  (eval/uniform_t_loss every 5k steps)
+%   Baseline      run id 1893f8w8  (train/loss_avg100 every ~5k steps)
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.94\columnwidth,
+  height=5.0cm,
+  xlabel={Optimiser step},
+  ylabel={Eval loss / train loss avg100},
+  xlabel style={font=\footnotesize},
+  ylabel style={font=\footnotesize},
+  tick label style={font=\scriptsize},
+  xmin=0, xmax=200000,
+  ymin=0.07, ymax=0.30,
+  xtick={0, 50000, 100000, 150000, 200000},
+  xticklabels={0, 50k, 100k, 150k, 195k},
+  ytick={0.08, 0.12, 0.16, 0.20, 0.24, 0.28},
+  grid=major, grid style={gray!18, dashed},
+  legend style={font=\scriptsize, draw=gray!35, fill=white,
+                at={(0.98,0.97)}, anchor=north east, row sep=-2pt},
+  legend cell align=left,
+  title={\scriptsize Long-horizon (195k step) apples-to-apples (W\&B)},
+  title style={yshift=-2pt},
+  clip mode=individual,
+]
+
+% PhotonFlow-Strict S_scale_4M (W&B run q62gznt7, eval/uniform_t_loss)
+\addplot [color=pfPhotonic, thick, mark=square*, mark size=1.0pt]
+  coordinates {
+    (4999, 0.2643)  (24999, 0.2301)  (49999, 0.2077)
+    (74999, 0.2000) (99999, 0.1895)  (124999, 0.1844)
+    (149999, 0.1713)(174999, 0.1591) (194999, 0.1595)
+  };
+\addlegendentry{PhotonFlow-Strict ($S_\mathrm{scale\_4M}$, 4.87\,M)}
+
+% Baseline DiT (W&B run 1893f8w8, train/loss_avg100 as eval proxy
+% -- baseline does not log eval/* over time but the train/eval delta
+% is sub-0.01 per the 2K-horizon kernels of Sec.\ref{sec:exp-target}.)
+\addplot [color=pfNorm, thick, mark=*, mark size=1.0pt, dashed]
+  coordinates {
+    (6500, 0.1331)  (25200, 0.1001)  (49400, 0.0959)
+    (73100, 0.0923) (99300, 0.0912)  (121700, 0.0902)
+    (146800, 0.0895)(170700, 0.0882) (192800, 0.0883)  (196900, 0.0876)
+  };
+\addlegendentry{Baseline DiT (4.89\,M, train-loss avg100)}
+
+% Final-point annotations (no overlap)
+\node[font=\scriptsize, anchor=south, text=pfPhotonic!75!black, inner sep=1pt]
+  at (axis cs:194999, 0.1595) {\,$0.1595$};
+\node[font=\scriptsize, anchor=north, text=pfNorm!75!black, inner sep=1pt]
+  at (axis cs:196900, 0.0876) {\,$0.0876$};
+
+% Final-step gap arrow + label, far from data lines
+\draw[->, thick, gray!60]
+  (axis cs:160000, 0.198) -- (axis cs:175000, 0.165);
+\node[font=\scriptsize\itshape, anchor=south, text=gray!60!black,
+      inner sep=1pt]
+  at (axis cs:158000, 0.205) {final gap $+0.0719$};
+
+\end{axis}
+\end{tikzpicture}

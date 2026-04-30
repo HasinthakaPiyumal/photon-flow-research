@@ -1,6 +1,6 @@
 {
   "id": "hasinthakapiyumal/photonflow-adaln-scale",
-  "title": "PhotonFlow adaLN-scale (electro-optic MZM)",
+  "title": "photonflow adaln scale",
   "code_file": "photonflow_adaln_scale.ipynb",
   "language": "python",
   "kernel_type": "notebook",

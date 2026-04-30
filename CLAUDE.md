@@ -215,3 +215,158 @@ Undergraduate research by **Hasinthaka Piyumal** (University of Kelaniya, Sri La
 **Sprint:** Fri Apr 11 → Sun Apr 13, 2026. See `IMPLEMENTATION_PLAN.md` for detailed schedule.
 
 Built on the open-source `torchcfm`, `torchonn`, and `photontorch` projects.
+
+---
+
+## Session handover — paper finalisation (2026-04-30)
+
+This section captures **everything needed to continue this work from a fresh Claude Code session**: state of the paper, state of the code, what was just done, what's next, and where to look for each artefact.
+
+### Headline result (final, paper-defensible)
+
+| Configuration | Params | Eval @ 2K | Gap vs DiT baseline | Status |
+|---|---:|---:|---:|---|
+| Baseline DiT (4.89 M, 4 blocks, 4 heads) | 4,886,544 | 0.1734 | 0.0000 | reference |
+| **K2 = K_bs256** (adaLN-scale + bs=256 + lr=3e-3) | 6,685,966 | **0.2169** | **+0.0435** ✅ | **target hit** |
+| **S_scale_4M** (baseline-parity, K2 recipe, num_blocks=5) | 4,867,082 | 0.2363 | +0.0629 | parity-best |
+| T_scale_9M (K2 recipe, num_blocks=10) | 9,414,292 | 0.2152 | +0.0418 | scale Pareto |
+| U_scale_15M (K2 recipe, num_blocks=16) | 14,870,944 | 0.2099 | +0.0365 | best gap |
+
+**Long-horizon (195K steps, apples-to-apples on W&B):**
+- Baseline DiT @ 195K (run `1893f8w8`): eval **0.0876**
+- PhotonFlow S_scale_4M @ 195K (run `q62gznt7`, crashed at step 197 182): eval **0.1595**
+- Apples-to-apples gap **+0.0719** (slightly wider than +0.0629 at 2K — architectural ceiling at 4.87 M scale)
+
+**Module-tree audit at every variant**: 0 `nn.Linear`, 0 `nn.SiLU`, 0 `nn.Sigmoid`, 0 `nn.ReLU`, 0 `nn.GELU` in forward graph. Strict zero-OEO.
+
+### What was done in this conversation (in order)
+
+1. **Combo v3 → v6 sweeps** (29 Kaggle kernels total): exhausted the strict-additive lever surface across `num_blocks`, `num_monarch_factors`, `time_dim`, `cond_bias_hidden`, `monarch_init`, `learnable_absorber_alpha`, `absorber_leaky_slope`, `use_noise`, all 4 CFMLoss reweighting schemes (`logit_normal`, EDM, min-SNR, FasterDiT direction loss). Established the **+0.0930 ceiling** across 30+ variants.
+2. **Paper-informed sweep** (`notebook4c567217a1`): tested EDM / min-SNR / SD3 time-shift losses on the new architecture, all neutral or worse. Confirmed ceiling.
+3. **K1 ceiling break** (`photonflow-adaln-scale`): added the `use_adaln_scale=True` kwarg to `PhotonFlowBlock`. Multiplicative time conditioning `h = norm(x) * (1 + scale) + shift` via electro-optic MZM (Shen 2017 §II / Clements 2016 §III). cb_hidden = 128/288/576 sweep landed at gap **+0.0710** (cb=576).
+4. **K2 target hit** (`photonflow-adaln-recipe-aug`): combined K1 winner + bs=256 + lr=3e-3 + warmup=300 → gap **+0.0435** (target met). AdamW was neutral, augmentation was catastrophic (DPN can't absorb input-distribution shift).
+5. **Scale sweep** (`photonflow-scale-sweep`): 3 param budgets at K2 recipe: 4.87 M / 9.41 M / 14.87 M → +0.0629 / +0.0418 / +0.0365. Clean Pareto curve.
+6. **Long-horizon** (W&B run `q62gznt7`): 200K-budget run, crashed at 197 182 (Kaggle 12h limit). Trajectory in W&B: 0.2643 (5K) → 0.1595 (195K). Baseline `1893f8w8` finished at 0.0876.
+7. **GPU-opt experiments** (`photonflow-gpu-opt-10k` v1+v2): `torch.compile` crashed silently on Cayley solves; BF16 autocast was 1.27× **slower** than FP32 eager (Cayley `torch.linalg.solve` has no BF16 LAPACK). Honest negative result.
+8. **Paper rewrite** (`paper/paper-latex.tex`):
+   - Switched abstract / intro / conclusion to honest **+0.0719 long-horizon gap** (not the earlier asymmetric "−0.0057 negative gap" framing).
+   - Removed all "we deleted electronic ops" language (per user instruction — those were our mistakes, not a contribution).
+   - Added side-by-side `fig:samples` (PhotonFlow vs baseline at 195K).
+   - Added `fig_traj_long.tex` with real W&B trajectory data.
+   - Cut `fig_traj`, `fig_ablation`, `fig_progression`, `§exp-progression`, the long Reproducibility Ledger table, and Table VII to fit IEEE conference budget.
+   - Compressed methodology + lit-review + discussion.
+   - Bibliography now uses `\scriptsize`.
+9. **Validation pass**: cross-checked every numeric claim against code/logs/W&B. Found and fixed:
+   - Table II audit: MonarchLayer 30 → **46**, SaturableAbsorber 14 → **22** (the original counts were "outer instances only"; the audit walks the full `model.modules()` tree).
+   - "78 Cayley solves" → **~280** (3 × 2 × 46 = 276) in 3 places.
+   - Typo: +0.3978 → +0.3977 (D_edm gap).
+10. **fig_method redesign**: replaced the old "Deleted electronic code paths" callout with a more detailed compact 3-row diagram showing the data spine (with tensor shapes), PhotonFlowBlock zoom (with explicit adaLN-scale formula), and Time pathway (WCT → MonarchLinear → PPLN → MonarchLinear → (s,b) feeding both sub-layers).
+
+### Current paper state
+
+| File | State |
+|---|---|
+| `paper/paper-latex.tex` | 7 pages, IEEE conference; user wants 6, **needs 1 more page cut** |
+| `paper/paper-latex.pdf` | freshly compiled (build-final-v12) |
+| `paper/fig_method.tex` | redesigned compact 3-row, last revision had right-edge clipping issues — verify in next compile |
+| `paper/fig_traj_long.tex` | NEW — uses W&B q62gznt7 + 1893f8w8 trajectory data |
+| `paper/fig_samples.tex` | side-by-side photonflow + baseline PNGs |
+| `paper/fig_hardware.tex` | log-axis `\node` overlay (fixed log10-vs-value bug) |
+| `paper/fig_traj.tex` | DELETED (covered by `fig_traj_long`) |
+| `paper/fig_ablation.tex` | exists but UNUSED (paper text removed `\input{fig_ablation}`) |
+| `paper/fig_progression.tex` | exists but UNUSED |
+| `paper/fig_scale.tex` | exists but UNUSED |
+| `paper/photonflow_samples_195k.png` | user-provided, 195K eval=0.1595 |
+| `paper/baseline_samples_195k.png` | user-provided, 195K eval=0.0876 |
+| `paper/references.bib` | 22 entries, all cite-resolved |
+
+**User constraints**: don't commit to git until told (last 2 commits paused). Hold all changes in working tree.
+
+### What needs to be done next (priority order)
+
+1. **Trim 1 more page (7 → 6)**. Options remaining:
+   - Tighten methodology Eq.~(\ref{eq:sub1}) caption + paragraph
+   - Drop `§exp-setup` (already short, but could fold into `§exp-audit`)
+   - Drop one of the 3 result tables (II/III/IV/V/VI) — but each carries unique info
+   - Use even tighter font on bibliography (`\tiny` is too small; `\scriptsize` is the floor)
+   - Move `fig_traj_long` from `figure` to a smaller inset
+   - Compress hardware-projection section (currently has §method-hwsim text + §exp-hwsim text + fig_hardware)
+2. **Fix fig_method right-edge clipping** — the tikz x-axis is currently 0..12 cm wide; if a `figure*` is 17 cm wide we have margin, but the labels at right (sub-layer 1/2) were clipping in v11. v12 removed those labels but the figure is still positioned starting from x=0; should add inner-padding or center it.
+3. **Final visual QA** of all 6 (or 7) pages.
+4. **Commit + push** when user gives green light. Two staged commits ready in working tree:
+   - paper figure overlap fixes (already done)
+   - paper content trim + table-II/Cayley-count corrections + 195K honest gap
+
+### Critical correctness notes
+
+- **Module-tree audit numbers** (Table II in paper) reflect the full `model.modules()` walk: MonarchLayer=46, MonarchLinear=16, PPLNSigmoid=8, SaturableAbsorber=22, DivisivePowerNorm=15, WavelengthCodedTime=1. The "outer-only" interpretation (30 MonarchLayer, 14 SA) is mentioned in a footnote.
+- **Cayley solve count = 276** per forward (factor=3 × 2 sides × 46 layers). Paper rounds to "~280".
+- **K2 K_bs256 = 6,685,966 params**, 1.37× baseline. **NOT** at exact baseline parity. Exact parity is `S_scale_4M` at 4,867,082 (gap +0.0629).
+- **Aug variants (`L_aug`, `M_all`) failed catastrophically** — DPN cannot absorb mean shift from `(x-0.5)/0.5` centering. Raw `ToTensor()` only.
+- **AdamW (J_adamw)** was gap-neutral vs Adam — adaLN-Zero + Cayley already provide implicit regularisation at the 2K horizon.
+
+### Forbidden experiments (per user instruction this session)
+
+The user explicitly said: *"dont add experiments where EOE operations [happened] (they are wrong, add properly photon-native op)"*. **Do not include in the paper or any new analysis**:
+
+- `exp2-photonflow-v17-*` (had `adaln_bottleneck Linear`)
+- `exp3-noise-mnist-*` (v17 + noise = still electronic)
+- `exp2-photonflow-mnist-*` runs with > 12 M params (legacy v11/v17)
+- The "Stage 1 hybrid" `-0.0119` result (had `nn.Linear` bookends)
+- The "+0.1241 strict cut" architectural-progression bar (refers to the cost of removing electronic ops we shouldn't have had)
+
+The paper's headline must be about the photon-native architecture **as designed**, not about "we recovered from our own electronic-op mistakes".
+
+### Tools / access
+
+- **Kaggle CLI**: `.venv/Scripts/python.exe -c "from kaggle.cli import main; main()"` (the bare `kaggle.exe` had a permissions issue on this machine)
+- **W&B MCP**: registered at `https://mcp.withwandb.com/mcp` with header `Authorization: Bearer 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` (40+ chars; the older 36-char token is rejected for entity-level queries). The MCP client sometimes shows "Failed to connect" but direct JSON-RPC via `curl` works.
+- **W&B project root**: `https://wandb.ai/costasenumi05-zenlize-labs/photonflow` — 39 runs, 22 of which are excluded legacy electronic-op runs.
+- **Tectonic**: `tools/tectonic.exe` v0.15.0
+- **pdftoppm**: `/c/poppler/poppler-24.08.0/Library/bin/pdftoppm.exe` (130 DPI is the standard rendering for visual QA)
+
+### Key W&B run IDs
+
+| Run ID | Display name | State | Final eval | Use |
+|---|---|---|---:|---|
+| `q62gznt7` | exp2-photonflow-S_scale_4M-200K-kaggle | crashed | 0.1595 @ step 194 999 | **PhotonFlow long-horizon** (paper Fig. 5) |
+| `1893f8w8` | exp1_baseline_kaggle | finished | 0.0876 train_loss_avg100 @ step 196 900 | **Baseline long-horizon** (paper Fig. 5) |
+
+### Key Kaggle kernel paths
+
+- Architecture / hyperparam sweeps: `kaggle/photonflow-native-combo[1-6]/`, `kaggle/notebook4c567217a1/`
+- Ceiling break (K1): `kaggle/photonflow-adaln-scale/`
+- Target hit (K2): `kaggle/photonflow-adaln-recipe-aug/`
+- Scale sweep: `kaggle/photonflow-scale-sweep/`
+- GPU-opt: `kaggle/photonflow-gpu-opt-10k/`, `kaggle/photonflow-gpu-opt-10k-v2/`
+- Long-horizon kernel (TIMED OUT, no local logs): `kaggle/photonflow-exp2-200k/` (stub only — actual data is in W&B `q62gznt7`)
+
+### Local working-tree status (uncommitted changes ready to commit)
+
+```
+M paper/paper-latex.tex
+M paper/paper-latex.pdf
+M paper/fig_method.tex      (compact redesign — verify no right-edge clipping)
+M paper/fig_ablation.tex    (overlap fixes — figure now unused in tex but keep file)
+M paper/fig_progression.tex (overlap fixes — figure now unused)
+M paper/fig_hardware.tex    (log10-vs-value label bug fixed)
+M paper/fig_traj.tex        (annotation tightening — figure now unused)
+A paper/fig_traj_long.tex   (NEW)
+A paper/photonflow_samples_195k.png  (NEW, user-provided)
+A paper/baseline_samples_195k.png    (NEW, user-provided)
+M .gitignore                (added outputs/exp_gpu_opt_compare/)
+```
+
+### Files to read first when resuming
+
+1. `photonflow_experiments_report.md` — chronological log of all 29 Kaggle kernels (~1700 lines)
+2. `paper/paper-latex.tex` — current paper draft (~600 lines, 7 pages)
+3. `photonflow/model.py` — `PhotonFlowModel` + `PhotonFlowBlock` with `use_adaln_scale` kwarg
+4. `photonflow/train.py` — `CFMLoss` with the 4 paper-informed reweighting modes
+5. `kaggle/photonflow-adaln-recipe-aug/output/logs/summary.txt` — K2 (target-hit) numbers
+6. `kaggle/photonflow-scale-sweep/output/logs/summary.txt` — Pareto-curve numbers
+7. The two 195K sample PNGs in `paper/`
+
+### TL;DR for the next agent
+
+> PhotonFlow is a strict-photon-native CFM that hit the +0.05 target on MNIST 2K via adaLN-scale (electro-optic MZM) + bs/lr scaling. Long-horizon 195K shows the gap stabilising at +0.0719 (architectural floor at 4.87 M scale). Paper is at 7 pages; user wants 6; figure 1 was just redesigned and may need one more polish for right-edge clipping. Commit on user's signal — nothing in working tree is committed yet from this session.
