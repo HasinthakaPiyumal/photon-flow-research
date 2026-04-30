@@ -1,86 +1,110 @@
-% fig_method.tex -- compact detailed PhotonFlow architecture diagram.
-% Uses absolute positions for tight horizontal layout that fits a
-% figure* (full-text-width) box without margin overflow.
+% fig_method.tex -- compact, aligned PhotonFlow architecture diagram.
+% Three horizontal rows, all centered on a common x-axis spanning
+% [0, 14] cm so the figure sits cleanly inside a figure* environment
+% (full text width ~ 17.8 cm).
 \begin{tikzpicture}[
   font=\scriptsize,
   every node/.style={align=center},
   x=1cm, y=1cm,
+  pharrow/.style={-{Stealth[length=3pt,width=2.4pt]},line width=0.55pt,gray!55},
+  pfbox/.style={draw=#1!85,fill=#1!12,rounded corners=1.5pt,
+                text=black,font=\footnotesize,inner sep=2.3pt,minimum height=7mm},
 ]
 
 % =================================================================
-% ROW 1 -- Forward-pass spine (top), with tensor shapes
+% ROW 1  --  Forward-pass spine
+%   9 nodes, uniform 8 mm height, centred on x = 7.0
 % =================================================================
-\node[pfbox=pfPhotonic, minimum width=10mm, minimum height=7mm]   (in)  at ( 0.6, 0)    {$x_t$\\\tiny$(B,\,784)$};
-\node[pfbox=pfPhotonic, minimum width=14mm, minimum height=7mm]   (ib)  at ( 2.0, 0)    {Monarch\\bookend};
-\node[pfbox=pfPhotonic, minimum width=11mm, minimum height=7mm]   (b1)  at ( 3.5, 0)    {Block$_1$};
-\node[pfbox=pfPhotonic, minimum width=11mm, minimum height=7mm]   (b2)  at ( 4.8, 0)    {Block$_2$};
-\node                                                              (dots)at ( 6.0, 0)    {$\cdots$};
-\node[pfbox=pfPhotonic, minimum width=11mm, minimum height=7mm]   (b7)  at ( 7.2, 0)    {Block$_7$};
-\node[pfbox=pfNorm,     minimum width=12mm, minimum height=7mm]   (fn)  at ( 8.7, 0)    {Final\\DPN};
-\node[pfbox=pfPhotonic, minimum width=14mm, minimum height=7mm]   (ob)  at (10.3, 0)    {Monarch\\bookend};
-\node[pfbox=pfPhotonic, minimum width=10mm, minimum height=7mm]   (out) at (11.8, 0)    {$\hat v$\\\tiny$(B,\,784)$};
+\node[pfbox=pfPhotonic, minimum width=11mm] (in)   at ( 0.7, 0) {$x_t$\\\tiny$(B,\,784)$};
+\node[pfbox=pfPhotonic, minimum width=14mm] (ib)   at ( 2.4, 0) {Monarch\\bookend};
+\node[pfbox=pfPhotonic, minimum width=12mm] (b1)   at ( 4.1, 0) {Block$_1$};
+\node[pfbox=pfPhotonic, minimum width=12mm] (b2)   at ( 5.5, 0) {Block$_2$};
+\node                                       (dots) at ( 6.7, 0) {$\cdots$};
+\node[pfbox=pfPhotonic, minimum width=12mm] (b7)   at ( 7.9, 0) {Block$_7$};
+\node[pfbox=pfNorm,     minimum width=13mm] (fn)   at ( 9.4, 0) {Final\\DPN};
+\node[pfbox=pfPhotonic, minimum width=14mm] (ob)   at (11.1, 0) {Monarch\\bookend};
+\node[pfbox=pfPhotonic, minimum width=11mm] (out)  at (12.8, 0) {$\hat v$\\\tiny$(B,\,784)$};
 
 \foreach \a/\b in {in/ib, ib/b1, b1/b2, b2/dots, dots/b7, b7/fn, fn/ob, ob/out}
   \draw[pharrow] (\a) -- (\b);
 
-\node[font=\tiny\itshape, text=gray!60!black, anchor=north]
-      at ($(ib)+(0,-4mm)$) {Cayley MZI mesh~\cite{shen2017,clements2016}};
-\node[font=\tiny\itshape, text=gray!60!black, anchor=north]
-      at ($(fn)+(0,-4mm)$) {MRR + SOA~\cite{chen2021norm}};
+% Footnote-style physical labels under Row 1, vertically aligned
+\node[font=\tiny\itshape, text=gray!55!black, anchor=north]
+      at ($(ib)+(0.85,-5.5mm)$) {Cayley MZI mesh~\cite{shen2017,clements2016}};
+\node[font=\tiny\itshape, text=gray!55!black, anchor=north]
+      at ($(fn)+(0,-5.5mm)$)    {MRR + SOA~\cite{chen2021norm}};
 
 % =================================================================
-% ROW 2 -- PhotonFlowBlock zoom (K1/K2 operating point)
+% ROW 2  --  PhotonFlowBlock zoom (two coherent-residual sub-layers)
+%   Six positions per sub-layer, vertically aligned across the two.
+%   Modulators (mod1, mod2) are small text nodes between DPN and M.
 % =================================================================
 \node[font=\scriptsize\itshape, anchor=west]
-  at (0, -1.65) {\textbf{PhotonFlowBlock} -- two coherent-residual sub-layers (K1/K2 operating point):};
+  at (0.4, -1.6)
+  {\textbf{PhotonFlowBlock} \,---\, two coherent-residual sub-layers:};
 
-% sub-layer 1
-\node[pfbox=pfNorm,     minimum width=10mm, minimum height=6mm]  (dpn1) at ( 1.5,-2.4) {DPN};
-\node[font=\scriptsize, anchor=west]                              (mod1) at ( 2.15,-2.4)
-      {$\!\odot\!(1{+}s_1){+}b_1$};
-\node[pfbox=pfPhotonic, minimum width=10mm, minimum height=6mm]  (mL1) at ( 4.5,-2.4) {$M_L$};
-\node[pfbox=pfPhotonic, minimum width=10mm, minimum height=6mm]  (mR1) at ( 5.7,-2.4) {$M_R$};
-\node[pfbox=pfNonlin,   minimum width=8mm,  minimum height=6mm]  (sa1) at ( 6.85,-2.4) {SA};
-\node[pfbox=pfPhotonic, minimum width=12mm, minimum height=6mm]  (add1)at ( 8.2,-2.4) {$x{+}h$};
+% Common x-coordinates for the two sub-layers
+\def\xDPN{2.4}\def\xMOD{3.8}\def\xMA{5.4}\def\xMB{6.7}\def\xSA{8.0}\def\xADD{9.6}
+
+% --- sub-layer 1 (y = -2.55) ---
+\node[pfbox=pfNorm,     minimum width=12mm] (dpn1) at (\xDPN, -2.55) {DPN};
+\node[font=\scriptsize, inner sep=1pt]      (mod1) at (\xMOD, -2.55) {$\odot(1{+}s_1){+}b_1$};
+\node[pfbox=pfPhotonic, minimum width=11mm] (mL1)  at (\xMA,  -2.55) {$M_L$};
+\node[pfbox=pfPhotonic, minimum width=11mm] (mR1)  at (\xMB,  -2.55) {$M_R$};
+\node[pfbox=pfNonlin,   minimum width=10mm] (sa1)  at (\xSA,  -2.55) {SA};
+\node[pfbox=pfPhotonic, minimum width=14mm] (add1) at (\xADD, -2.55) {$x{+}h$};
 
 \draw[pharrow] (dpn1.east) -- (mod1.west);
 \draw[pharrow] (mod1.east) -- (mL1.west);
-\draw[pharrow] (mL1) -- (mR1);  \draw[pharrow] (mR1) -- (sa1);
-\draw[pharrow] (sa1) -- (add1);
+\draw[pharrow] (mL1)       -- (mR1);
+\draw[pharrow] (mR1)       -- (sa1);
+\draw[pharrow] (sa1)       -- (add1);
 
-% sub-layer 2
-\node[pfbox=pfNorm,     minimum width=10mm, minimum height=6mm]  (dpn2) at ( 1.5,-3.3) {DPN};
-\node[font=\scriptsize, anchor=west]                              (mod2) at ( 2.15,-3.3)
-      {$\!\odot\!(1{+}s_2){+}b_2$};
-\node[pfbox=pfPhotonic, minimum width=10mm, minimum height=6mm]  (mL2) at ( 4.5,-3.3) {$M_{L'}$};
-\node[pfbox=pfNonlin,   minimum width=8mm,  minimum height=6mm]  (sa2) at ( 5.65,-3.3) {SA};
-\node[pfbox=pfPhotonic, minimum width=10mm, minimum height=6mm]  (mR2) at ( 6.95,-3.3) {$M_{R'}$};
-\node[pfbox=pfPhotonic, minimum width=12mm, minimum height=6mm]  (add2)at ( 8.4,-3.3) {$x{+}h$};
+% --- sub-layer 2 (y = -3.65) ---
+\node[pfbox=pfNorm,     minimum width=12mm] (dpn2) at (\xDPN, -3.65) {DPN};
+\node[font=\scriptsize, inner sep=1pt]      (mod2) at (\xMOD, -3.65) {$\odot(1{+}s_2){+}b_2$};
+\node[pfbox=pfPhotonic, minimum width=11mm] (mL2)  at (\xMA,  -3.65) {$M_{L'}$};
+\node[pfbox=pfNonlin,   minimum width=10mm] (sa2)  at (\xMB,  -3.65) {SA};
+\node[pfbox=pfPhotonic, minimum width=11mm] (mR2)  at (\xSA,  -3.65) {$M_{R'}$};
+\node[pfbox=pfPhotonic, minimum width=14mm] (add2) at (\xADD, -3.65) {$x{+}h$};
 
 \draw[pharrow] (dpn2.east) -- (mod2.west);
 \draw[pharrow] (mod2.east) -- (mL2.west);
-\draw[pharrow] (mL2) -- (sa2);  \draw[pharrow] (sa2) -- (mR2);
-\draw[pharrow] (mR2) -- (add2);
+\draw[pharrow] (mL2)       -- (sa2);
+\draw[pharrow] (sa2)       -- (mR2);
+\draw[pharrow] (mR2)       -- (add2);
 
-\draw[pharrow, dashed, pfPhotonic!55] (add1.south) to[bend left=10] (dpn2.north);
+% Residual hand-off between sub-layers (right-side coherent add)
+\draw[pharrow, dashed, pfPhotonic!55]
+  (add1.south) to[out=-90, in=90] (dpn2.north);
 
 % =================================================================
-% ROW 3 -- Time pathway feeding (s_i, b_i) into both sub-layers
+% ROW 3  --  Time pathway feeding (s_i, b_i) into both sub-layers
+%   Flows right-to-left so the output sits directly under the
+%   modulators in Row 2, allowing short vertical dashed feedbacks.
 % =================================================================
 \node[font=\scriptsize\itshape, anchor=west]
-  at (0, -4.15) {\textbf{Time pathway} (\S\ref{sec:method-mzm}, EO MZM bank~\cite{shen2017,clements2016}):};
+  at (0.4, -4.7)
+  {\textbf{Time pathway} (Sec.~\ref{sec:method-mzm}, EO MZM bank~\cite{shen2017,clements2016}):};
 
-\node[pfbox=pfWave,     minimum width=18mm, minimum height=6mm]  (wct)  at ( 2.0,-4.85) {WCT$(t)+\theta_k$};
-\node[pfbox=pfPhotonic, minimum width=14mm, minimum height=6mm]  (ml1)  at ( 4.0,-4.85) {Mon.\,Lin.};
-\node[pfbox=pfNonlin,   minimum width=10mm, minimum height=6mm]  (ppln) at ( 5.4,-4.85) {PPLN};
-\node[pfbox=pfPhotonic, minimum width=16mm, minimum height=6mm]  (ml2)  at ( 7.0,-4.85) {Mon.\,Lin.\\\tiny zero-init};
-\node[font=\scriptsize, anchor=west]                              (cb)   at ( 8.0,-4.85)
-      {$\to(s_i,b_i)$};
+% Left-to-right pathway: WCT -> MonLin -> PPLN -> MonLin0 -> (s_i,b_i)
+\node[pfbox=pfWave,     minimum width=22mm] (wct)  at ( 1.9, -5.55) {WCT$(t)+\theta_k$};
+\node[pfbox=pfPhotonic, minimum width=15mm] (ml1)  at ( 4.2, -5.55) {Mon.\,Lin.};
+\node[pfbox=pfNonlin,   minimum width=11mm] (ppln) at ( 5.85,-5.55) {PPLN};
+\node[pfbox=pfPhotonic, minimum width=18mm] (ml2)  at ( 7.85,-5.55) {Mon.\,Lin.\\\tiny zero-init};
+\node[font=\scriptsize, inner sep=1pt]      (cb)   at ( 9.6, -5.55) {$(s_i,\,b_i)$};
 
-\draw[pharrow] (wct) -- (ml1); \draw[pharrow] (ml1) -- (ppln);
-\draw[pharrow] (ppln) -- (ml2); \draw[pharrow] (ml2.east) -- (cb.west);
+\draw[pharrow] (wct)       -- (ml1);
+\draw[pharrow] (ml1)       -- (ppln);
+\draw[pharrow] (ppln)      -- (ml2);
+\draw[pharrow] (ml2.east)  -- (cb.west);
 
-\draw[pharrow, dashed, pfWave!75] (cb.north) to[bend right=20] (mod1.south);
-\draw[pharrow, dashed, pfWave!75] (cb.north) to[bend right=8]  (mod2.south);
+% Yellow dashed feedback from (s_i, b_i) to both modulators.
+% Two smooth curves that bend up-left, avoiding the sub-layer
+% horizontal flows.  The longer arrow (to mod1) bends wider.
+\draw[pharrow, dashed, pfWave!75] (cb.north)
+      to[out=120, in=-60] (mod2.south);
+\draw[pharrow, dashed, pfWave!75] (cb.north)
+      to[out=135, in=-45] (mod1.south);
 
 \end{tikzpicture}
