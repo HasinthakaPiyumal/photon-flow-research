@@ -18,7 +18,7 @@
   legend style={font=\scriptsize, draw=gray!35, fill=white,
                 at={(0.98,0.97)}, anchor=north east, row sep=-2pt},
   legend cell align=left,
-  title={\scriptsize Depth scaling at fixed K2 recipe (2\,k steps)},
+  title={\scriptsize Depth scaling at fixed bs/lr recipe (2\,k steps)},
   title style={yshift=-2pt},
 ]
 
@@ -31,13 +31,13 @@
 % scale sweep points
 \addplot [color=pfPhotonic, thick, mark=square*, mark size=2.0pt]
   coordinates {(4.87, 0.0629) (6.69, 0.0435) (9.41, 0.0418) (14.87, 0.0365)};
-\addlegendentry{PhotonFlow-Strict (K2 recipe)}
+\addlegendentry{PhotonFlow-Strict (bs/lr-scaled recipe)}
 
 % annotations
 \node[font=\scriptsize, anchor=south west, text=pfPhotonic!85!black]
   at (axis cs:4.87, 0.0635) {$N{=}5$ blocks};
 \node[font=\scriptsize, anchor=south, text=pfPhotonic!85!black]
-  at (axis cs:6.69, 0.0445) {$N{=}7$ (K2)};
+  at (axis cs:6.69, 0.0445) {$N{=}7$};
 \node[font=\scriptsize, anchor=south, text=pfPhotonic!85!black]
   at (axis cs:9.41, 0.0428) {$N{=}10$};
 \node[font=\scriptsize, anchor=south, text=pfPhotonic!85!black]

@@ -344,9 +344,15 @@ DiT-attention baseline ($4{,}886{,}544$ params, $4$ blocks, $4$
 heads, GELU + LayerNorm + adaLN-Zero) and the photon-native model
 use the same data pipeline ($60{,}000$ images flattened to
 $\mathbb{R}^{784}$); only the architecture and recipe differ.
-All measurements are single-seed (seed $42$) due to compute
-budget; per-seed variance on the $2{,}000$-step harness was
-$\pm 0.005$ uniform-$t$ loss across exploratory reruns.
+The baseline scale of $\sim\!4.89$\,M parameters was chosen as a
+standard, resource-appropriate budget for an MNIST proof-of-concept:
+large enough to converge robustly under the matched $2{,}000$-step
+horizon, but small enough that architectural limitations of the
+photon-native model are not masked by brute-force scaling on a
+trivially-fittable dataset.  All measurements are single-seed (seed
+$42$) due to compute budget; per-seed variance on the
+$2{,}000$-step harness was $\pm 0.005$ uniform-$t$ loss across
+exploratory reruns.
 
 \subsection{Module-tree audit}
 \label{sec:exp-audit}
@@ -509,13 +515,25 @@ photon-native models.
 
 Holding the bs/lr-scaled recipe fixed, we swept depth
 $N\!\in\!\{5,10,16\}$ to derive a parameter-budget Pareto curve
-(Table~\ref{tab:scale}).  At \emph{exact baseline parity}
-($4.87$\,M, $N{=}5$) the gap is $+0.0629$ -- a $\Delta\!=\!-0.0301$
-absolute improvement over the additive ceiling.  At $N{=}10$
-($9.4$\,M, $1.93\times$ baseline) the gap falls to $+0.0418$; at
-$N{=}16$ ($14.9$\,M, $3.04\times$ baseline) it falls to $+0.0365$.
-The scaling is approximately $\mathrm{gap}\!\propto\!1/\sqrt{P}$
-within this range.
+(Table~\ref{tab:scale}, Fig.~\ref{fig:scale}).  At \emph{exact
+baseline parity} ($4.87$\,M, $N{=}5$) the gap is $+0.0629$ -- a
+$\Delta\!=\!-0.0301$ absolute improvement over the additive
+ceiling.  At $N{=}10$ ($9.4$\,M, $1.93\times$ baseline) the gap
+falls to $+0.0418$; at $N{=}16$ ($14.9$\,M, $3.04\times$ baseline)
+it falls to $+0.0365$.  The scaling is approximately
+$\mathrm{gap}\!\propto\!1/\sqrt{P}$ within this range.
+
+\begin{figure}[tbp]
+\centering
+\input{fig_scale}
+\caption{Depth-scaling Pareto curve at the bs/lr-scaled recipe.
+Three measured points ($N\!\in\!\{5,10,16\}$) plus the
+$1.37\times$-baseline configuration of Table~\ref{tab:ceiling}
+last row.  The dashed red line marks the $+0.05$ matched-recipe
+target; the dotted vertical marks the $4.89$\,M baseline-parity
+boundary.}
+\label{fig:scale}
+\end{figure}
 
 \begin{table}[tbp]
 \caption{Depth-scaling sweep at fixed bs/lr-scaled recipe.  The
