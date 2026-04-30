@@ -1,62 +1,65 @@
-% fig_progression.tex -- architectural progression of the strict photon-native rewrite
-% Included via \input{fig_progression} inside a figure environment.
+% fig_progression.tex -- architectural progression across all photon-native milestones
+% All numbers measured on Kaggle (kernels referenced in caption).
 \begin{tikzpicture}
 \begin{axis}[
-  width=\columnwidth,
+  width=0.98\columnwidth,
   height=5.0cm,
   ybar,
-  bar width=8pt,
-  xlabel={Architectural step},
+  bar width=7pt,
+  xlabel={Architectural milestone},
   ylabel={Gap vs.\ baseline},
   xlabel style={font=\footnotesize},
   ylabel style={font=\footnotesize},
   tick label style={font=\scriptsize},
-  ymin=-0.04, ymax=0.18,
-  ytick={-0.02, 0, 0.05, 0.10, 0.15},
-  symbolic x coords={Hybrid, Cut, WaveOff, LearnAlpha, Factor3, Strict},
+  ymin=0, ymax=0.18,
+  ytick={0, 0.025, 0.05, 0.075, 0.10, 0.125, 0.15, 0.175},
+  symbolic x coords={Cut, WaveOff, LearnAlpha, AddOnly, MZM, K2},
   xtick=data,
-  xticklabels={Hybrid\\(1 adaLN), Full\\electronic cut, +Wavelength\\offset, +Learnable\\$\alpha$, +Factor-3\\Monarch, PhotonFlow-\\Strict},
+  xticklabels={Strict cut\\(post-delete), +Wavelength\\offset, +Learnable\\$\alpha$+leaky, Additive\\($A_\mathrm{ref}$), +MZM adaLN\\scale (K1), +bs/lr\\recipe (K2)},
   xticklabel style={rotate=22, anchor=east, align=center, font=\tiny},
   nodes near coords,
   nodes near coords style={font=\scriptsize, /pgf/number format/fixed,
-                           /pgf/number format/precision=3},
+                           /pgf/number format/precision=4},
   every node near coord/.append style={yshift=1pt},
   grid=major, grid style={gray!18, dashed},
-  enlarge x limits=0.08,
-  title={\scriptsize Gap vs.\ baseline across photon-native progression},
+  enlarge x limits=0.06,
+  title={\scriptsize Photon-native progression: deletion \(\to\) ceiling-break \(\to\) target hit},
   title style={yshift=-2pt},
 ]
 
-% reference horizontal at gap=0 (baseline parity)
-\addplot[sharp plot, solid, thick, black!60, forget plot]
-  coordinates {(Hybrid, 0) (Strict, 0)};
+% +0.05 target line
+\addplot[sharp plot, dashed, thick, red!55, forget plot]
+  coordinates {(Cut, 0.05) (K2, 0.05)};
+\node[font=\scriptsize\itshape, anchor=east, text=red!55!black]
+  at (axis cs:K2, 0.058) {$+0.05$ target};
 
-% Hybrid -- below baseline (negative bar, green)
-\addplot[fill=pfNonlin!60, draw=pfNonlin!90]
-  coordinates {(Hybrid, -0.0119)};
-
-% Full electronic cut -- red
+% Strict cut -- red (cost of full photon-native deletion)
 \addplot[fill=pfElec!80, draw=pfElec!95]
   coordinates {(Cut, 0.1241)};
 
-% photonic-only optimisations -- orange (recovered steps)
-\addplot[fill=pfPhotonic!85, draw=pfPhotonic!95]
-  coordinates {(WaveOff, 0.1028) (LearnAlpha, 0.0916)
-               (Factor3, 0.0920) (Strict, 0.0953)};
+% intermediate optimisations -- orange
+\addplot[fill=pfPhotonic!75, draw=pfPhotonic!90]
+  coordinates {(WaveOff, 0.1028) (LearnAlpha, 0.0953) (AddOnly, 0.0930)};
 
-% annotation: cost of full photon-native (Hybrid -> Cut step)
-\draw[pharrow, pfElec!85]
-  (axis cs:Hybrid, 0.07) -- (axis cs:Cut, 0.12);
-\node[font=\scriptsize\itshape, text=pfElec!80!black, anchor=south, align=center]
-  at (axis cs:Cut, 0.14) {\textbf{+0.128}: cost of\\full photon-native};
+% K1 (MZM ceiling-break) -- darker orange
+\addplot[fill=pfPhotonic!95, draw=pfPhotonic!95]
+  coordinates {(MZM, 0.0710)};
 
-% annotation: recovered via photonic levers
-\node[font=\scriptsize\itshape, text=pfPhotonic!80!black, anchor=south, align=center]
-  at (axis cs:LearnAlpha, 0.115) {$\sim\!0.03$ recovered\\(no electronic ops)};
+% K2 (target hit) -- green
+\addplot[fill=pfNonlin!85, draw=pfNonlin!95]
+  coordinates {(K2, 0.0435)};
 
-% annotation: Hybrid beats baseline
-\node[font=\scriptsize\itshape, text=pfNonlin!75!black, anchor=south]
-  at (axis cs:Hybrid, 0.015) {beats baseline};
+% annotation: cost of full photon-native (Cut)
+\node[font=\scriptsize\itshape, text=pfElec!75!black, anchor=south, align=center]
+  at (axis cs:Cut, 0.13) {cost of\\full delete};
+
+% annotation: ceiling break
+\node[font=\scriptsize\itshape, text=pfPhotonic!85!black, anchor=south, align=center]
+  at (axis cs:MZM, 0.078) {ceiling\\broken};
+
+% annotation: target hit
+\node[font=\scriptsize\itshape, text=pfNonlin!85!black, anchor=south, align=center]
+  at (axis cs:K2, 0.05) {target hit\\\checkmark};
 
 \end{axis}
 \end{tikzpicture}

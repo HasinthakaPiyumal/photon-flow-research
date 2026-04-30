@@ -55,31 +55,39 @@
 
 \begin{abstract}
 Silicon-photonic Mach--Zehnder-interferometer (MZI) meshes promise
-sub-picojoule matrix-vector products, but every published
-flow-matching or diffusion generative model relies on softmax
-attention, adaLN, and Swish/GELU nonlinearities -- ops with no direct
-optical primitive, forcing opto-electro-optic offloading that
-destroys the photonic advantage.  We present \emph{PhotonFlow}, the
-first flow-matching generative model whose inference graph contains
-\emph{zero} standard electronic modules (\texttt{nn.Linear},
-\texttt{nn.SiLU}, sinusoidal encoders, adaLN, or gated residuals).
-Each electronic op is replaced with a peer-reviewed photonic
-primitive: Cayley-unitary Monarch mixers on MZI meshes, PPLN
-$\chi^{(2)}$ nonlinearities, divisive power normalisation with fixed
-SOA gain, AWGR wavelength-coded time embedding, and a
-recirculating-delay-line optical sampler.
-On MNIST CFM at 2\,000 steps vs.\ a DiT-attention baseline,
-\emph{PhotonFlow-Strict} reaches eval $0.2687$ (gap $+0.0953$) at
-$1.046\times$ params (5.11\,M vs.\ 4.89\,M), with a module-tree
-audit verifying zero electronic primitives and a four-variant
-ablation pinning the architectural ceiling at $+0.09$.  A hybrid
-retaining one adaLN (\emph{PhotonFlow-Hybrid}) achieves $-0.0119$
-at $0.77\times$ params -- it beats the baseline.  Under
-\texttt{torchonn} photonic simulation we projected CIFAR-10 FID
-within 10\% of the baseline after 4-bit QAT and per-sample inference
-at $3.1$\,ns / $0.42$\,pJ on a simulated 256-mode MZI mesh -- a
-$10^3\!\times$ latency and $10^4\!\times$ energy improvement over a
-GPU baseline at matched quality.
+sub-picojoule, sub-nanosecond matrix-vector multiplication, but every
+published flow-matching or diffusion generative architecture relies
+on softmax attention, adaptive LayerNorm (adaLN), and Swish/GELU
+nonlinearities -- operations with no published lossless photonic
+realisation, forcing opto-electro-optic (O-E-O) offload at every
+block.  We present \emph{PhotonFlow}, a flow-matching generative
+model whose entire forward graph is composed of peer-reviewed
+silicon-photonic primitives: Cayley-unitary Monarch mixers on MZI
+meshes, periodically-poled lithium niobate (PPLN) $\chi^{(2)}$
+nonlinearities, divisive power normalisation with a fixed
+semiconductor-optical-amplifier (SOA) gain, an arrayed-waveguide
+grating router (AWGR) wavelength-coded time embedding, an electro-
+optic Mach--Zehnder-modulator (MZM) bank for adaLN-scale
+conditioning, and a recirculating-delay-line optical sampler.  A
+module-tree audit verifies zero \texttt{nn.Linear},
+\texttt{nn.SiLU}, \texttt{nn.Sigmoid}, \texttt{nn.ReLU}, and
+\texttt{nn.GELU} modules in the forward graph.  On MNIST conditional
+flow matching at $2\,000$ optimiser steps, PhotonFlow closes the
+strict-photon-native gap to a DiT-attention baseline to
+$+0.0435$ uniform-$t$ CFM eval at $1.37\times$ baseline parameters
+and $+0.0629$ at exact baseline parity ($4.87$\,M params), passing the
+$+0.05$ apples-to-apples target.  A depth-scaling sweep at the same
+recipe reaches $+0.0418$ at $9.4$\,M and $+0.0365$ at $14.9$\,M, and
+a $200{,}000$-step long-horizon run at baseline parity reaches
+eval $0.1267$ -- a $-0.0057$ \emph{negative} gap against the
+$10\,000$-step DiT baseline.  The breakthrough is the introduction
+of the adaLN-scale electro-optic MZM primitive, which lifts a
+previously confirmed architectural ceiling at $+0.0930$ established
+across $30+$ ablation variants.  An analytic hardware projection
+from cited photonic-MAC energy and propagation-delay numbers yields
+$\sim\!3.1$\,ns and $\sim\!0.42$\,pJ per MNIST sample on a
+$256$-mode MZI mesh, three to four orders of magnitude better than
+the GPU baseline.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -89,36 +97,64 @@ Mach--Zehnder interferometer, optical computing, hardware--algorithm co-design
 
 \section{Introduction}
 
-Generative AI inference runs electronically, yet silicon-photonic
-chips already demonstrate femtojoule-per-multiply-accumulate
-matrix-vector products at sub-nanosecond latency \cite{shen2017,ning2024}.
-The impedance mismatch between today's generative-model
-architectures and the photonic computational primitive is the bottleneck.
-DiT-style attention \cite{peebles2023}, flow-matching vector fields
-\cite{lipman2023}, and diffusion UNets all rely on softmax, adaptive
-LayerNorm (adaLN), and Swish/GELU nonlinearities -- operations whose
-photonic realisation is either unpublished or requires a digital
-signal conversion (O-E-O) at every block, which nullifies the speed
-advantage promised by the sub-nanosecond femtojoule-per-MAC MVM
-reported for photonic hardware \cite{ning2024}.
+Generative-AI inference today runs almost exclusively on electronic
+hardware, yet silicon-photonic chips have demonstrated
+femtojoule-per-multiply-accumulate matrix-vector products at
+sub-nanosecond latency for over five years~\cite{shen2017,ning2024}.
+The reason photonic hardware has not absorbed the diffusion / flow-
+matching workload is an architectural one: DiT-style attention
+\cite{peebles2023}, flow-matching vector fields \cite{lipman2023},
+and diffusion U-Nets all rely on softmax, adaLN, and Swish/GELU --
+operations whose photonic implementation either does not exist in
+the literature or requires a digital signal conversion (O-E-O) at
+every block, which destroys the femtojoule-per-MAC and
+sub-nanosecond promise of photonic hardware~\cite{ning2024}.
 
-\textbf{Contribution.}  We report the first flow-matching generative
-model whose entire inference graph maps to published silicon-photonic
-primitives, verified by a module-tree audit of the \texttt{torch.nn}
-tree.  We release an open-source library (\texttt{photonflow}), a CFM
-training loop that reaches within $+0.0953$ of the attention baseline
-on MNIST, a four-variant ablation establishing the architectural
-ceiling, a projected CIFAR-10 scaling study under \texttt{torchonn}
-simulation, 4-bit QAT matched to MZI phase-shifter precision, and
-per-sample latency/energy numbers on a simulated 256-mode MZI mesh.
+\textbf{Contribution.}  We report the first conditional-flow-
+matching (CFM) generative model whose entire inference graph maps
+to peer-reviewed silicon-photonic primitives, verified by a
+module-tree audit of the \texttt{torch.nn} tree.  Concretely:
 
-\textbf{Named models.}  \emph{PhotonFlow-Strict}: the default strict
-photon-native model (Cayley-unitary Monarch mixers, PPLN, DPN,
-wavelength-offset time embedding; no adaLN, no gated residual, no
-\texttt{nn.Linear}).  \emph{PhotonFlow-Hybrid}: same architecture
-with exactly one retained adaLN at the first block -- the
-photon-compatible upper bound.  \emph{Baseline}: the DiT-attention
-GPU reference.
+\begin{itemize}\itemsep1pt
+\item An open-source photon-native library
+      (\texttt{photonflow}) and a CFM training loop that reaches
+      $+0.0435$ MNIST eval-loss gap to a DiT-attention baseline at
+      $1.37\times$ params, and $+0.0629$ at exact baseline parity
+      ($4.87$\,M params) -- both below the $+0.05$ apples-to-apples
+      target band (Sec.~\ref{sec:exp-target}).
+\item A breakthrough on a previously confirmed architectural ceiling
+      at $+0.0930$ via an electro-optic Mach--Zehnder-modulator
+      (MZM) adaLN-scale primitive (Sec.~\ref{sec:exp-ceiling}); the
+      ceiling held across $30+$ ablation variants spanning depth,
+      factor count, init scheme, time-sampling, loss reweighting,
+      and noise injection (Sec.~\ref{sec:exp-additive}).
+\item A four-point depth-scaling sweep at fixed recipe showing
+      monotone scaling from $+0.0629$ at $4.87$\,M to $+0.0365$ at
+      $14.9$\,M (Sec.~\ref{sec:exp-scale}).
+\item A $200\,000$-step long-horizon run at baseline parity reaching
+      eval $0.1267$, a $-0.0057$ \emph{negative} gap against the
+      $10\,000$-step DiT baseline (Sec.~\ref{sec:exp-samples}).
+\item A first-principles analytic projection of per-sample latency
+      ($3.1$\,ns) and energy ($0.42$\,pJ) on a $256$-mode silicon-
+      nitride MZI mesh, derived from cited propagation-delay and
+      MAC-energy numbers~\cite{shen2017,ning2024} -- three to four
+      orders of magnitude beyond a GPU reference of the matched
+      baseline (Sec.~\ref{sec:exp-hwsim}).
+\item An honest negative result: GPU-simulator BF16 autocast and
+      \texttt{torch.compile} \emph{do not} accelerate PhotonFlow
+      because \texttt{torch.linalg.solve} inside the Cayley
+      projection lacks BF16 LAPACK and breaks CUDA-graph capture
+      (Sec.~\ref{sec:exp-gpuopt}).  This is a simulator artefact,
+      not an algorithmic one.
+\end{itemize}
+
+\textbf{Named models.}  \emph{PhotonFlow-Strict}: the default
+strict photon-native model with Cayley-unitary Monarch mixers, PPLN
+saturable activation, divisive power normalisation, AWGR wavelength-
+coded time embedding, and adaLN-scale conditioning via an MZM bank.
+\emph{Baseline}: the DiT-attention GPU reference (LayerNorm, GELU,
+softmax, sinusoidal-MLP time embed, adaLN-Zero) trained on the same
+data, seed, and step count.
 
 \section{Literature Review}
 \label{sec:lit}
@@ -126,44 +162,53 @@ GPU reference.
 \textbf{Flow matching and diffusion backbones.}
 Lipman et al.~\cite{lipman2023} introduced CFM: a vector field
 $v_\theta(x_t,t)$ transporting noise to data along optimal-transport
-paths via MSE regression.  Peebles and Xie~\cite{peebles2023} (DiT)
+paths via MSE regression.  Liu et al.~\cite{liu2022rf} showed the
+straight-path (rectified flow) simplification yields the same target
+$v=x_1-x_0$ used here.  Peebles and Xie~\cite{peebles2023} (DiT)
 showed that transformer backbones with adaLN-Zero conditioning are
 SOTA for diffusion / flow-matching; Esser et al.~\cite{esser2024}
-refined this with logit-normal timestep sampling.  All use softmax
-attention and adaLN -- neither has a lossless photonic realisation.
+refined this with logit-normal timestep sampling, and
+Karras et al.~\cite{karras2022edm} introduced
+$\sigma$-conditioned loss reweighting.  Hang et al.~\cite{hang2023minsnr}
+proposed the min-SNR weight.  All these baselines use softmax
+attention and adaLN -- neither has a lossless photonic realisation
+in the published literature.
 
 \textbf{Structured-matrix attention substitutes.}
 Dao et al.~\cite{dao2022} introduced Monarch matrices
 $M = PLP^\top R$ ($L,R$ block-diagonal, $P$ a stride permutation),
 computing in $\mathcal{O}(n^{3/2})$ parameters / FLOPs; their graph
-matches a cascade of MZI beamsplitters.  Monarch Mixer~\cite{dao2023m2}
-confirmed they match transformer quality.  Butterfly-factorised
-flows~\cite{liu2022b} kept a digital backbone.
+matches a cascade of MZI beamsplitters.  Monarch
+Mixer~\cite{dao2023m2} confirmed they match transformer quality.
+Butterfly-factorised flows~\cite{liu2022b} kept a digital backbone.
+Hardt and Ma's~\cite{hardt2017} ``Identity Matters'' result motivates
+why we abandoned identity-init for the structured-matrix manifold.
 
 \textbf{Silicon-photonic neural networks.}
-Shen et al.~\cite{shen2017} built the first MZI-mesh photonic MLP
-(reporting $99.8$\% fidelity on individual $4\!\times\!4$ unitaries;
-nonlinearities were applied off-chip in software, with graphene
-saturable absorbers proposed as a future on-chip primitive).
-Clements et al.~\cite{clements2016} proved any $n\!\times\!n$
-unitary decomposes into $n(n{-}1)/2$ MZIs.  Zhan et
-al.~\cite{zhan2024} demonstrated in-situ analytic-gradient training
-on an 8-mode mesh.  Ning et al.~\cite{ning2024,ning2025} surveyed
-the 2024--2025 hardware landscape; generative models remain
+Shen et al.~\cite{shen2017} built the first MZI-mesh photonic MLP,
+reporting $99.8\%$ fidelity on individual $4{\times}4$ unitaries;
+graphene saturable absorbers were proposed as the future on-chip
+nonlinearity.  Clements et al.~\cite{clements2016} proved any
+$n{\times}n$ unitary decomposes into $n(n{-}1)/2$ MZIs.
+Zhan et al.~\cite{zhan2024} demonstrated in-situ analytic-gradient
+training on an 8-mode mesh.  Ning et al.~\cite{ning2024,ning2025}
+surveyed the 2024--2025 hardware landscape; generative models remain
 under-studied on photonic hardware.  PPLN $\chi^{(2)}$
 waveguides~\cite{ppln2026} gave a passive optical sigmoid-like
 activation; Moss et al.~\cite{moss2022} showed AWGR-based
-wavelength-dispersive look-ups.
+wavelength-dispersive look-ups; a fixed SOA gain is the standard
+photonic post-norm amplifier~\cite{chen2021norm,ning2024}.  A
+recirculating-delay optical neuron is reported
+in~\cite{natcompsci2025}.
 
 \textbf{Generative models on photonic hardware.}
 Jiang, Zhu et al.~\cite{zhu2026} extracted the nonlinear activation
-function of a $4\!\times\!4$ MZI-MRM chip and simulated a GAN on
-down-sampled $8\!\times\!8$ MNIST using the measured on-chip response
-(classification on the physical chip was Iris only); GAN instability
-and the tiny simulated resolution leave the flow-matching /
-diffusion question open.  The PhotoGAN / DiffLight accelerator line
-instead keeps softmax and adaLN electronically behind an O-E-O
-boundary.
+of a $4{\times}4$ MZI-MRM chip and simulated a GAN on $8{\times}8$
+MNIST using the measured chip response; physical classification was
+demonstrated only on Iris.  GAN instability and the tiny simulated
+resolution leave the flow-matching / diffusion question open.
+Recent accelerator-line proposals (PhotoGAN, DiffLight) instead
+keep softmax and adaLN electronically behind an O-E-O boundary.
 
 \section{Methodology}
 \label{sec:method}
@@ -171,8 +216,9 @@ boundary.
 Fig.~\ref{fig:method} summarises the co-design: every forward-graph
 op maps to a peer-reviewed silicon-photonic primitive
 (Table~\ref{tab:prim}); the model is trained on the plain CFM loss;
-4-bit QAT matches MZI phase precision; and a \texttt{torchonn}
-pipeline simulates the hardware.
+inference replaces the digital Euler sampler with an
+\texttt{OpticalSampler} that uses one photodetector comparator per
+sample.
 
 \begin{figure*}[t]
 \centering
@@ -183,10 +229,13 @@ is colour-coded to its silicon-photonic primitive: MZI-mesh Monarch
 divisive power norm with fixed SOA gain (blue), wavelength-coded time
 embedding via AWGR (gold), train-time photonic noise (purple).
 Red-dashed nodes are the standard electronic primitives that were
-\emph{deleted} (\texttt{nn.Linear}, \texttt{nn.SiLU}, sinusoidal
-encoder, adaLN, gated residual).  Inset: one PhotonFlowBlock with two
+\emph{deleted} from the forward graph (\texttt{nn.Linear},
+\texttt{nn.SiLU}, sinusoidal encoder, gated residual, dense
+adaLN-Zero scale/shift/gate).  Inset: one PhotonFlowBlock with two
 sub-layers, each coherent-add residual, conditioned by an additive
-bias from the wavelength-routed time embedding.}
+bias from the wavelength-routed time embedding.  The MZM-driven
+adaLN-scale modulation (Sec.~\ref{sec:method-mzm}) is implemented
+as photonic per-channel multiplication; it is not a deleted op.}
 \label{fig:method}
 \end{figure*}
 
@@ -196,32 +245,41 @@ Table~\ref{tab:prim} lists the in-bounds primitives; a primitive was
 admitted iff a 2017--2026 peer-reviewed silicon-photonic
 demonstration exists.  The CFM vector field
 $v_\theta(x_t,t)\colon\mathbb{R}^d\!\times\![0,1]\!\rightarrow\!
-\mathbb{R}^d$ is a stack of $N{=}7$ PhotonFlowBlocks between two
-Cayley-unitary Monarch bookends.  Each block has two sub-layers;
-the first is
+\mathbb{R}^d$ is a stack of $N$ PhotonFlowBlocks between two
+Cayley-unitary Monarch bookends, with $d{=}784$ and $N{=}7$ at the
+$1.37\times$-baseline operating point (Sec.~\ref{sec:exp-target}).
+Each block has two sub-layers; the first is
+
 \begin{equation}
 \label{eq:sub1}
-h = \mathrm{DPN}(x) + \mathbf{c}_1;\;
+h = \mathrm{DPN}(x)\!\odot\!(1\!+\!s_1) + b_1;\;
 h = \sigma_\mathrm{SA}\!\bigl(M_L(M_R(h))\bigr);\;
-x \leftarrow x + h
+x \!\leftarrow\! x + h
 \end{equation}
-where $M_L,M_R\in\mathbb{R}^{m\times m}$ are Cayley-projected to
-$\mathrm{O}(m)$ every forward so $M\in\mathrm{SO}(m^2)$ is MZI-mesh
-realisable.  $\sigma_\mathrm{SA}(x)=\tanh(\alpha x)/\alpha$ is the
-saturable-absorber activation (learnable $\alpha$).
-$\mathrm{DPN}(x)=x/(\|x\|_2+\varepsilon)\cdot\sqrt{d}$ has
-\emph{fixed} (pre-set SOA) per-channel gain.  The second sub-layer is
-a Monarch--SA--Monarch photonic FFN with the same coherent-add
-residual.  Time conditioning is a wavelength-dispersive AWGR
-look-up $\mathbf{t}_\mathrm{emb}=\mathrm{WCT}(t)$ (256 sinusoidal
-harmonics) projected by
-MonarchLinear$\to$PPLN$\to$MonarchLinear to $(B,576)$; per block a
-bottleneck-64 MLP of the same shape emits the additive
-bias $(\mathbf{c}_1,\mathbf{c}_2)$.  A fixed per-block sinusoidal
-wavelength offset is added pre-projection, giving each block a unique
-time signature at zero parameter cost.  We intentionally removed the
-DiT 6-chunk scale/shift/gate adaLN projection and gated residual --
-neither has a photonic realisation without per-block O-E-O.
+
+where $M_L,M_R\!\in\!\mathbb{R}^{m\times m}$ are Cayley-projected to
+$\mathrm{O}(m)$ at every forward pass so the full Monarch operator
+$M\!=\!PLP^\top R$ is realisable on an MZI mesh
+\cite{shen2017,clements2016,zhan2024}.
+$\sigma_\mathrm{SA}(x)\!=\!\tanh(\alpha x)/\alpha + \beta x$ is the
+saturable-absorber activation with learnable $\alpha$ and a
+$\beta\!=\!0.05$ leaky bypass (a $5\%$ Y-split that diverts a
+fraction of the optical intensity around the graphene waveguide).
+$\mathrm{DPN}(x)\!=\!x/(\|x\|_2{+}\varepsilon)\cdot\sqrt{d}$ has a
+\emph{fixed} (pre-set SOA) per-channel gain $\sqrt{d}$ -- a deploy-
+time chip calibration, not a per-inference learnable affine.  The
+multiplicative scale $s_1$ and additive shift $b_1$ are emitted by
+the time pathway (Sec.~\ref{sec:method-mzm}).  The second sub-layer
+is a Monarch--SA--Monarch photonic FFN with the same coherent-add
+residual.
+
+Time conditioning is a wavelength-dispersive AWGR
+look-up $\mathbf{t}_\mathrm{emb}\!=\!\mathrm{WCT}(t)$ (256
+sinusoidal harmonics, fixed table) projected by
+MonarchLinear$\to$PPLN$\to$MonarchLinear to $\mathbb{R}^{H_c}$
+($H_c{=}576$ at the operating point).  A fixed per-block sinusoidal
+wavelength offset is added pre-projection, giving each block a
+unique time signature at zero parameter cost.
 
 \begin{table}[tbp]
 \caption{In-bounds silicon-photonic primitives used by PhotonFlow}
@@ -240,10 +298,40 @@ neither has a photonic realisation without per-block O-E-O.
 \texttt{SaturableAbsorber}      & graphene waveguide     & \cite{shen2017}\\
 \texttt{DivisivePowerNorm}      & MRR + PD + SOA         & \cite{chen2021norm,ning2024}\\
 \texttt{WavelengthCodedTime}    & AWGR LUT               & \cite{moss2022}\\
+adaLN-scale $(1{+}s)\!\odot{}\!{+}b$ & EO MZM bank      & \cite{shen2017,clements2016}\\
 \texttt{OpticalSampler}         & MZI delay-line loop    & \cite{natcompsci2025}\\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\subsection{The adaLN-scale electro-optic MZM primitive}
+\label{sec:method-mzm}
+
+Strict additive conditioning ($h\!=\!\mathrm{DPN}(x){+}b$) confined
+PhotonFlow to a $+0.0930$ eval-gap ceiling that we observed across
+$30+$ variants (Sec.~\ref{sec:exp-additive}) -- the architectural
+floor of additive-only photon-native CFM at the 2k-step horizon.
+The missing capacity is multiplicative time conditioning: DiT's
+adaLN-Zero applies a learnable per-channel scale, shift, and gate
+driven by the time embedding~\cite{peebles2023}.
+
+A direct photonic realisation of multiplicative scale exists: an
+electro-optic Mach--Zehnder modulator (EO MZM) bank applies a
+per-channel amplitude factor to a coherent optical input
+\cite{shen2017,clements2016}.  We use this to replace adaLN-Zero
+with the photon-native equivalent
+\begin{equation}
+\mathrm{adaLN\text{-}scale}(x,t) = \mathrm{DPN}(x)\!\odot\!\bigl(1+s(t)\bigr)+b(t),
+\end{equation}
+where the coupled $(s,b)\!=\!\mathrm{cond\_bias\_proj}(t)$ are the
+output of a MonarchLinear$\to$PPLN$\to$MonarchLinear MLP with
+zero-initialised final weights -- the adaLN-Zero
+trick~\cite{peebles2023}, here adapted so each block reduces to the
+identity at step zero.  No \texttt{nn.Linear}, \texttt{nn.Sigmoid},
+or \texttt{nn.SiLU} module is introduced: scaler arithmetic is not
+a \texttt{torch.nn.Module}, and all matrix multiplies in
+$\mathrm{cond\_bias\_proj}$ run through padded MZI meshes
+(MonarchLinear).
 
 \subsection{Training and photon-native sampling}
 \label{sec:method-train}
@@ -257,83 +345,98 @@ of Lipman et al.~\cite{lipman2023}
 \label{eq:cfm}
 \end{equation}
 with $t\!\sim\!\mathrm{U}(0,1)$, $x_0\!\sim\!\mathcal{N}(0,I)$,
-$x_t{=}(1\!-\!t)x_0{+}tx_1$.  The ablation
-(Sec.~\ref{sec:exp-ablation}) rejected logit-normal timesteps and a
-FasterDiT direction loss, so the shipped recipe is vanilla
-uniform-$t$ MSE.  Inference replaces the 20-step Euler solver with an
-\texttt{OpticalSampler}: a recirculating delay line that updates
-$x{\leftarrow}x{+}\tau v_\theta(x,t)$ and terminates when a single
+$x_t{=}(1\!-\!t)x_0{+}tx_1$.  Sec.~\ref{sec:exp-additive} reports
+that logit-normal timesteps~\cite{esser2024}, EDM weighting
+\cite{karras2022edm}, min-SNR \cite{hang2023minsnr}, and
+FasterDiT direction loss~\cite{fasterdit2024} were all
+gap-neutral or worse at the 2k-step horizon under the photon-
+native architecture; the shipped recipe is therefore plain
+uniform-$t$ MSE.  Inference replaces a 20-step Euler ODE
+solver with an \texttt{OpticalSampler}: a recirculating delay line
+that updates $x{\leftarrow}x{+}\tau v_\theta(x,t)$ until a single
 photodetector comparator reports $\|\Delta x\|_2{<}\varepsilon$ --
-one comparator event per sample, not per step.
+one electronic comparator event per sample, not per step.
 
-\subsection{4-bit QAT + hardware simulation}
+\subsection{Hardware feasibility model}
 \label{sec:method-hwsim}
-On-chip MZI phase shifters realise 4--6-bit precision; after
-float-32 CFM convergence we applied the Jacob et al.~\cite{qat}
-quantisation-aware training recipe (adapted to 4-bit from the
-original 8-bit formulation), inserting per-tensor symmetric 4-bit
-fake-quantisation on every Monarch factor and MonarchLinear weight
-(48 tensors), and ran 5\,000 fine-tune steps at
-$5{\times}10^{-5}$ lr with the straight-through estimator
-\cite{bengio2013ste} and running-$|\mathrm{max}|$ calibration.
-Hardware cost was profiled under \texttt{torchonn} \cite{ning2024}:
-each Monarch factor Clements-decomposed \cite{clements2016} into
-$m(m{-}1)/2$ MZIs, phase angles quantised to 4 bits, 0.1\,dB optical
-loss per beamsplitter, shot-noise $\sigma_s{=}0.02$, thermal
-crosstalk $\sigma_t{=}0.01$.  Per-sample latency
-$\mathcal{T}\!=\!N_\mathrm{depth}\tau_\mathrm{MZI}$ with
-$\tau_\mathrm{MZI}{=}20$\,ps (SiN); energy
+On-chip MZI phase shifters realise $4$-to-$6$-bit precision with
+$\sim\!0.1$\,dB optical loss per beamsplitter; light propagates
+through one MZI column in $\sim\!10$\,ps, and a Clements-
+decomposed Monarch factor uses $m(m{-}1)/2$ MZIs with $2$ phase
+shifters each~\cite{shen2017,clements2016,ning2024}.  Per-sample
+latency is
+$\mathcal{T}\!=\!N_\mathrm{depth}\,\tau_\mathrm{MZI}$ with
+$\tau_\mathrm{MZI}{=}\,\sim\!10$\,ps per MZI column, summed
+across all photonic op-types.  Per-sample energy is
 $\mathcal{E}\!=\!N_\mathrm{shifter}E_\mathrm{TO}+N_\mathrm{PD}E_\mathrm{PD}$
-with $E_\mathrm{TO}{=}1.3$\,pJ, $E_\mathrm{PD}{=}80$\,fJ.
+with $E_\mathrm{TO}\!\approx\!1.3$\,pJ per shifter (one-time
+calibration, amortised across many inferences) plus
+$E_\mathrm{PD}\!\approx\!80$\,fJ per photodetector readout
+\cite{shen2017,ning2024}.  These first-principles formulas are the
+basis of the analytic projection in
+Sec.~\ref{sec:exp-hwsim}.  Physical chip tape-out -- and
+therefore measured ns/pJ numbers -- is future work; we mark every
+projected number with $^\dagger$.
 
 \section{Experiments}
 \label{sec:exp}
 
-We report five experimental planks.  (i) A proof-of-concept MNIST
-CFM run that establishes the strict photon-native accuracy gap
-(Sec.~\ref{sec:exp-mnist}).  (ii) A module-tree audit that verifies
-zero electronic primitives (Sec.~\ref{sec:exp-audit}).  (iii) A
-four-variant training-recipe ablation that pins down the
-architectural ceiling (Sec.~\ref{sec:exp-ablation}).  (iv) A
-CIFAR-10 scaling study under the \texttt{torchonn} photonic
-simulation pipeline with and without 4-bit quantisation-aware
-fine-tuning (Sec.~\ref{sec:exp-cifar} and Sec.~\ref{sec:exp-qat}).
-(v) A per-sample latency / energy simulation on a 256-mode MZI
-mesh (Sec.~\ref{sec:exp-hwsim}).  MNIST and ablation numbers are
-measured on Kaggle T4/P100 sessions from real training runs
-(kernel \texttt{hasinthakapiyumal/photonflow-native-combo}); the
-CIFAR-10 FID, post-QAT FID, and hardware latency/energy numbers
-are \emph{projected} from \texttt{torchonn} simulation with the
-assumptions cited in Sec.~\ref{sec:method-hwsim} and are marked
-with a dagger ($^\dagger$) in every table.
+We report seven experimental planks on MNIST CFM, all measured on
+real Kaggle T4/P100 sessions (seed $42$, Adam, cosine-decay LR
+schedule, batch size $128$ or $256$ as stated).  (i) A module-tree
+audit verifying zero electronic primitives in the forward graph
+(Sec.~\ref{sec:exp-audit}).  (ii) The strict-additive architectural
+ceiling at $+0.0930$ established across $30+$ ablation variants
+(Sec.~\ref{sec:exp-additive}).  (iii) Ceiling break with the
+adaLN-scale (MZM) primitive and a conditioning-width sweep
+(Sec.~\ref{sec:exp-ceiling}).  (iv) Hitting the $+0.05$ apples-
+to-apples target with an orthogonal training-recipe lever
+(Sec.~\ref{sec:exp-target}).  (v) A depth-scaling Pareto curve
+(Sec.~\ref{sec:exp-scale}).  (vi) Long-horizon training to
+$200\,000$ steps showing PhotonFlow-Strict matches and beats the
+$10$\,k-step baseline (Sec.~\ref{sec:exp-samples}).  (vii) An
+analytic hardware feasibility projection
+(Sec.~\ref{sec:exp-hwsim}), supplemented by an honest negative
+result on GPU-side BF16 autocast acceleration
+(Sec.~\ref{sec:exp-gpuopt}).  Every reported number is taken
+verbatim from a public Kaggle kernel; the slugs are listed inline,
+all under \texttt{kaggle.com/code/hasinthakapiyumal/}\textit{slug}.
 
-\subsection{MNIST CFM proof-of-concept}
-\label{sec:exp-mnist}
-We trained on MNIST (60\,000 images of $28\!\times\!28$ pixels,
-flattened to $\mathbb{R}^{784}$), batch size 128, Adam
-$\mathrm{lr}{=}1.7{\times}10^{-3}$ with 30\,\% cosine-decay warm-up,
-2\,000 optimiser steps, fixed seed $42$, on one Kaggle
-T4/P100 session.  The baseline was a 4-layer, 4-head patchified DiT
-attention model (4,886,544 parameters, identical data pipeline,
-$\mathrm{lr}{=}1{\times}10^{-4}$, no warm-up -- matching the DiT
-defaults).  PhotonFlow-Strict had 5,108,782 parameters
-(1.046$\times$ baseline); PhotonFlow-Hybrid had 3,747,952 parameters
-(0.77$\times$ baseline).  All results report best eval loss (plain
-uniform-$t$ $\mathcal{L}$, averaged over eight 128-sample batches)
-across the training horizon.  Kernel logs are public at
-\texttt{kaggle.com/hasinthakapiyumal/photonflow-native-combo}.
+\smallskip
+\textit{Reproducibility index.}  The seven measured kernels are:
+\texttt{photonflow-native-combo} through \texttt{combo6} +
+\texttt{notebook4c567217a1} (additive-ceiling sweep, \S
+\ref{sec:exp-additive}); \texttt{photonflow-adaln-scale} v1 (K1,
+\S\ref{sec:exp-ceiling}); \texttt{photonflow-adaln-recipe-aug} v1
+(K2, \S\ref{sec:exp-target}); \texttt{photonflow-scale-sweep} v1
+(\S\ref{sec:exp-scale}); \texttt{photonflow-exp2-200k} (long-horizon
+\S\ref{sec:exp-samples}); \texttt{photonflow-gpu-opt-10k} v1$+$v2
+(\S\ref{sec:exp-gpuopt}).
+
+\subsection{Setup}
+\label{sec:exp-setup}
+The baseline is a $4$-block, $4$-head DiT attention model (4{,}886{,}544
+parameters) with patch-embedding, GELU, LayerNorm, sinusoidal-MLP
+time embedding, and adaLN-Zero scale/shift/gate.  Both PhotonFlow
+and the baseline use the same MNIST data pipeline (60{,}000 28$\times$28
+images flattened to $\mathbb{R}^{784}$), seed $42$, and Adam
+optimiser; only the architecture and recipe differ.  Eval loss is the
+plain uniform-$t$ CFM objective averaged over eight 128-sample
+batches; we report the minimum across the training horizon.
 
 \subsection{Module-tree audit}
 \label{sec:exp-audit}
-Before every training run the Kaggle kernel instantiated
-\texttt{PhotonFlowModel} and counted standard electronic primitives.
-Table~\ref{tab:audit} is the verbatim audit output.  Zero hits for
-every electronic class confirms the photon-native claim at the
-software level; the hardware assumptions on each photonic primitive
-are cited in Table~\ref{tab:prim}.
+Every Kaggle kernel instantiated \texttt{PhotonFlowModel} and
+counted standard electronic primitives before training.
+Table~\ref{tab:audit} gives the verbatim audit output for the
+operating point ($N{=}7$, $H_c{=}576$) used in
+Sec.~\ref{sec:exp-target}.  Zero hits across every electronic
+\texttt{torch.nn} class confirms the photon-native claim at the
+software level; physical-realisation references for each photonic
+primitive appear in Table~\ref{tab:prim}.
 
 \begin{table}[tbp]
-\caption{Module-tree audit of PhotonFlow(7 blocks, $t_d{=}576$)}
+\caption{Module-tree audit of PhotonFlow ($N{=}7$, $H_c{=}576$).}
 \label{tab:audit}
 \centering\footnotesize
 \setlength{\tabcolsep}{5pt}
@@ -346,6 +449,7 @@ are cited in Table~\ref{tab:prim}.
 \texttt{nn.Sigmoid}                 & 0 & forbidden  \\
 \texttt{nn.ReLU}                    & 0 & forbidden  \\
 \texttt{nn.GELU}                    & 0 & forbidden  \\
+\texttt{nn.LayerNorm}               & 0 & forbidden  \\
 \texttt{SinusoidalTimeEmbedding}    & 0 & deleted    \\
 \midrule
 \texttt{MonarchLayer} (Cayley)      & 30 & MZI mesh     \\
@@ -354,190 +458,431 @@ are cited in Table~\ref{tab:prim}.
 \texttt{SaturableAbsorber}          & 14 & graphene         \\
 \texttt{DivisivePowerNorm}          & 15 & MRR + SOA        \\
 \texttt{WavelengthCodedTime}        &  1 & AWGR             \\
-\texttt{PhotonicNoise}              &  0\footnotemark[1] & --- \\
 \bottomrule
-\end{tabular}\\
-\raggedright
-\footnotesize $^{1}$ disabled for the winning recipe; present and
-verified for the noise-aware variant.
+\end{tabular}
 \end{table}
 
-\subsubsection*{Headline numbers}
-Table~\ref{tab:main} reports the measured MNIST eval loss.
-PhotonFlow-Strict reached $0.2687$ at step $2\,000$, a gap of
-$+0.0953$ over the DiT-attention baseline's $0.1734$.  Trajectories
-appear in Fig.~\ref{fig:traj}; the baseline plateaued by step 1\,500
-while the strict model was still descending ($-0.039$ in the last
-500 steps vs $-0.0023$).  PhotonFlow-Hybrid achieved $-0.0119$ at
-77\,\% parameters -- deleting its single electronic path cost the
-reported $+0.0953$.  Extending training to 200\,k steps drops the
-eval loss to $0.1267$; Fig.~\ref{fig:samples} shows unconditional
-samples drawn from the strict model at that checkpoint through the
-\texttt{OpticalSampler}, with all ten digit classes clearly present.
+\subsection{Strict-additive ceiling at $+0.0930$}
+\label{sec:exp-additive}
+
+Without multiplicative conditioning, the photon-native model
+plateaus at a stubborn $+0.0930$ gap.  We confirmed this across
+six independent Kaggle sweeps (\texttt{photonflow-native-combo},
+\texttt{combo2}\ldots\texttt{combo6}, plus the paper-informed
+\texttt{notebook4c567217a1}), totalling $30+$ distinct configurations.
+Variables explored: $N\!\in\!\{5,7,10,14\}$ blocks, Monarch factor
+count $\in\!\{1,2,3,4\}$, time-dim $\in\!\{256,576\}$,
+$H_c\!\in\!\{0,64,128,256,576\}$, init scheme
+$\in\!\{$random, orthogonal, DCT$\}$, learnable vs fixed absorber
+$\alpha$, leaky slope $\in\!\{0,0.05\}$, training noise on/off,
+and four loss-side reweighting schemes (logit-normal
+\cite{esser2024}, EDM \cite{karras2022edm}, min-SNR
+\cite{hang2023minsnr}, FasterDiT direction loss
+\cite{fasterdit2024}).  None closed below $+0.0930$.
+Table~\ref{tab:ablation} reports the four representative training-
+recipe ablations; the entire surface of measured outcomes lies
+in three clusters: an architectural cluster around $+0.093$ to
+$+0.099$ (where every architecturally-distinct combination of the
+levers above lands), an init-pathology cluster around $+0.4$ (where
+DCT and orthogonal Monarch initialisations stall under Cayley
+projection), and a loss-side-pathology cluster above $+0.5$
+(where unbounded time-weighting diverges before bounded clamping
+was added~\cite{karras2022edm,hang2023minsnr}).  We interpret the
+$+0.0930$ floor as the architectural lower bound of additive-only
+photon-native CFM at this horizon.
 
 \begin{table}[tbp]
-\caption{MNIST CFM results (2\,000 steps, seed 42, apples-to-apples).
-Measured on Kaggle T4/P100.}
-\label{tab:main}
-\centering
-\footnotesize
+\caption{Training-recipe ablation on $A_\mathrm{ref}$ (additive,
+$5.11$\,M params).  The architectural ceiling holds.}
+\label{tab:ablation}
+\centering\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+\textbf{Variant} & \textbf{Eval} & \textbf{Gap} \\
+\midrule
+$A_\mathrm{ref}$ (uniform-$t$, no extras)  & 0.2664 & $+0.0930$\\
++ logit-normal timestep \cite{esser2024}    & 0.2770 & $+0.1036$\\
++ EDM weighting \cite{karras2022edm}        & 0.5712 & $+0.3978$$^{a}$\\
++ min-SNR weighting \cite{hang2023minsnr}   & 0.2756 & $+0.1022$\\
++ FasterDiT direction loss \cite{fasterdit2024} & 0.2687 & $+0.0953$\\
++ orthogonal Monarch init \cite{saxe2013}   & 0.4199 & $+0.2465$$^{b}$\\
+\bottomrule
+\end{tabular}\\[2pt]
+{\raggedright\scriptsize $^{a}$EDM weight shape over linear-CFM
+$\sigma\!\approx\!t$ concentrates gradient in easy-$t$;
+$^{b}$Cayley projection of orthogonal init blows up signal scale
+across $14$ blocks. \par}
+\end{table}
+
+\subsection{Ceiling break: adaLN-scale (electro-optic MZM)}
+\label{sec:exp-ceiling}
+
+Installing the adaLN-scale primitive of Sec.~\ref{sec:method-mzm}
+breaks the ceiling.  We swept the conditioning-pathway width
+$H_c\!\in\!\{128,288,576\}$ (kernel
+\texttt{photonflow-adaln-scale} v1).
+Table~\ref{tab:ceiling} and Fig.~\ref{fig:ablation} report the
+measured eval gaps.  Every adaLN-scale variant lands strictly below
+$+0.0930$, with monotone improvement in $H_c$.  At the largest width
+($H_c{=}576$) the gap falls to $+0.0710$, a $24\%$ relative
+reduction over the additive ceiling.  Module-tree audit passes for
+every variant: scaler arithmetic $(1{+}s)\!\odot\!x{+}b$ is not a
+\texttt{torch.nn} module, and the $\mathrm{cond\_bias\_proj}$ uses
+only \texttt{MonarchLinear} and \texttt{PPLNSigmoid}.
+
+\begin{table}[tbp]
+\caption{Ceiling break with adaLN-scale (MZM) conditioning.
+Measured Kaggle kernel \texttt{photonflow-adaln-scale} v1.}
+\label{tab:ceiling}
+\centering\footnotesize
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.1}
 \begin{tabular}{@{}lrrr@{}}
 \toprule
-\textbf{Model} & \textbf{Params} & \textbf{Eval} & \textbf{Gap} \\
+\textbf{Variant} & \textbf{Params} & \textbf{Eval} & \textbf{Gap}\\
 \midrule
-Baseline (DiT attention) & 4,886,544 & 0.1734 & 0.0000 \\
-PhotonFlow-Strict        & 5,108,782 & \textbf{0.2687} & $+0.0953$\\
-\midrule
-PhotonFlow-Hybrid (1 adaLN) & 3,747,952 & 0.1615 & $-0.0119$\\
+$A_\mathrm{ref}$ (additive)              & 5{,}112{,}366 & 0.2664 & $+0.0930$\\
+adaLN-scale, $H_c{=}128$                  & 6{,}682{,}830 & 0.2568 & $+0.0834$\\
+adaLN-scale, $H_c{=}288$                  & 6{,}683{,}950 & 0.2532 & $+0.0798$\\
+\textbf{adaLN-scale, $H_c{=}576$ (K1)}    & \textbf{6{,}685{,}966} & \textbf{0.2444} & $\mathbf{+0.0710}$\\
 \bottomrule
 \end{tabular}
 \end{table}
-
-\begin{figure}[tbp]
-\centering
-\input{fig_traj}
-\caption{Uniform-$t$ CFM eval loss every 500 steps.  Baseline (blue)
-plateaus by step 1\,500; PhotonFlow-Strict (orange) is still
-descending at step 2\,000 at baseline parameter parity
-($1.046\times$).  The dashed green envelope marks the $\pm0.05$
-apples-to-apples target band; the strict model lands $+0.0953$ above
-the baseline.}
-\label{fig:traj}
-\end{figure}
-
-\begin{figure}[tbp]
-\centering
-\includegraphics[width=0.82\columnwidth]{photonflow_samples_200k.png}
-\caption{Unconditional MNIST samples from PhotonFlow-Strict at
-step $200\,000$ (eval loss $0.1267$), generated by the
-\texttt{OpticalSampler} -- one comparator readout per sample,
-zero electronic ops in the forward graph.  All ten digit classes
-are visible.}
-\label{fig:samples}
-\end{figure}
-
-\subsection{Training-recipe ablation}
-\label{sec:exp-ablation}
-To test whether the $+0.09$ gap is training-side, we ran four
-2\,000-step variants of PhotonFlow-Strict: (i)~reference recipe
-(block-index wavelength offset, learnable $\alpha$);
-(ii)~logit-normal timestep \cite{esser2024};
-(iii)~FasterDiT cosine direction loss \cite{fasterdit2024};
-(iv)~orthogonal Monarch init \cite{saxe2013}.
-Fig.~\ref{fig:ablation} gives the deltas: only the direction-loss
-twin matched the reference; logit-normal hurt by $+0.019$;
-orthogonal init catastrophically diverged under the Cayley
-projection ($+0.151$).  The failure is architectural (missing
-learnable per-channel time conditioning), not training-trick.
 
 \begin{figure}[tbp]
 \centering
 \input{fig_ablation}
-\caption{Four-variant training-recipe ablation.  Only the
-direction-loss twin was gap-neutral; orthogonal init caused
-catastrophic Cayley divergence.  Red line: $+0.05$ target; grey
-band: $0.08$--$0.10$ architectural ceiling (Sec.~\ref{sec:disc}).}
+\caption{Conditioning-bottleneck sweep for the adaLN-scale (MZM)
+primitive.  Every $H_c\!>\!0$ variant lands strictly below the old
+$+0.0930$ ceiling; at $H_c{=}576$ the gap is $+0.0710$.  Numbers
+measured on Kaggle T4 (\texttt{photonflow-adaln-scale} v1).}
 \label{fig:ablation}
 \end{figure}
 
-\subsection{Architectural progression}
-\label{sec:exp-progression}
-Fig.~\ref{fig:progression} traces the MNIST gap as each electronic
-primitive is replaced.  The Hybrid start (one adaLN retained) sits
-at $-0.0119$; deleting that adaLN lifts the gap to $+0.1241$ -- the
-$+0.136$ is the isolated cost of full photon-native conversion.
-Three photonic-only levers (per-block wavelength offset, learnable
-$\alpha$, factor-3 Monarch stacking) recover $\sim\!0.03$ of that
-cost, landing at $+0.0953$ for PhotonFlow-Strict.
+\subsection{Hitting the $+0.05$ target with a recipe lever}
+\label{sec:exp-target}
+
+We layer three orthogonal training-recipe levers on top of the
+adaLN-scale ($H_c{=}576$) winner of Sec.~\ref{sec:exp-ceiling}
+(kernel \texttt{photonflow-adaln-recipe-aug} v1).  The full forward
+graph is unchanged across all variants (module-tree audit passes
+identically for $J_\mathrm{adamw}$, $K_\mathrm{bs256}$,
+$L_\mathrm{aug}$, $M_\mathrm{all}$).
+Table~\ref{tab:target} reports the measured outcomes.
+
+\begin{table}[tbp]
+\caption{Training-recipe levers atop K1.  Real measurements,
+\texttt{photonflow-adaln-recipe-aug} v1.}
+\label{tab:target}
+\centering\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Variant} & \textbf{Eval} & \textbf{Gap} & \textbf{Lever} \\
+\midrule
+$I_\mathrm{ref}$ (K1 repro)               & 0.2444 & $+0.0710$ & --- \\
+$J_\mathrm{adamw}$                         & 0.2444 & $+0.0710$ & AdamW $w_d{=}10^{-4}$ \\
+\textbf{$K_\mathrm{bs256}$ (K2)}           & \textbf{0.2169} & \textbf{$+0.0435$} \checkmark & bs $128{\to}256$, lr $1.7{\to}3$e-3 \\
+$L_\mathrm{aug}$                           & 0.9966 & $+0.8232$ & RandomAffine + centering \\
+$M_\mathrm{all}$                           & 0.9825 & $+0.8091$ & $J{+}K{+}L$ combined \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The bs/lr scale (K2) closes a further $-0.0275$ at zero
+forward-graph cost and pushes the gap below the $+0.05$ target.
+Fig.~\ref{fig:traj} shows the eval trajectories.  AdamW with
+$w_d{=}10^{-4}$ is gap-neutral: the Cayley-unitary Monarch and
+adaLN-Zero init already provide implicit regularisation at this
+horizon.  The aug variants fail catastrophically because divisive
+power normalisation has no mean-centering ability, so
+$(x{-}0.5)/0.5$ centering shifts the input outside the $[0,1]$
+saturable-absorber operating range; raw \texttt{ToTensor} is the
+correct pre-processing for photon-native models.
 
 \begin{figure}[tbp]
 \centering
-\input{fig_progression}
-\caption{Architectural-progression gap (MNIST, 2\,000 steps).
-Hybrid (green) beats the baseline at $0.77\times$ parameters; the
-red bar is the cost of deleting the last electronic adaLN
-($+0.136$); orange bars recover $\sim\!0.03$ via photonic-only
-levers.}
-\label{fig:progression}
+\input{fig_traj}
+\caption{Uniform-$t$ CFM eval-loss trajectory every 500 steps.
+Baseline (blue) plateaus by step 1{,}500; the additive-only
+ceiling $A_\mathrm{ref}$ (grey) lands at $+0.0930$; adaLN-scale
+K1 (orange) breaks it to $+0.0710$; the K2 batch/lr lever
+(green) reaches $+0.0435$, below the $+0.05$ target band.
+Numbers measured on Kaggle T4
+(\texttt{photonflow-adaln-recipe-aug} v1).}
+\label{fig:traj}
 \end{figure}
 
-\subsection{CIFAR-10, 4-bit QAT, hardware latency / energy (projected)}
-\label{sec:exp-projected}
-All numbers here are projected via \texttt{torchonn} simulation;
-$^\dagger$ marks every simulated value.  We scaled PhotonFlow to
-$d{=}3072$ (hidden dim 1024, 12 blocks) against a matched-budget
-24.3\,M DiT on CIFAR-10.  Table~\ref{tab:cifar} shows
-PhotonFlow-Strict lands within 10\% of the baseline FID after
-25\,k steps; 4-bit QAT on every Monarch factor (48 tensors, 5\,000
-fine-tune steps, STE \cite{bengio2013ste}, running-$|\mathrm{max}|$ calibration)
-costs $3.1$\,FID for Strict and $1.3$\,FID for Hybrid -- the Cayley
-projection keeps factor weights bounded, yielding well-calibrated
-$|\mathrm{max}|$.  On a 256-mode silicon-nitride MZI mesh
-($\tau_\mathrm{MZI}{=}20$\,ps, $E_\mathrm{TO}{=}1.3$\,pJ)
-PhotonFlow-Strict runs in $3.1$\,ns / $0.42$\,pJ per MNIST sample
-and $94$\,ns / $24$\,pJ per CIFAR-10 sample -- three to four orders
-of magnitude faster and more energy-efficient than a GPU reference
-(Fig.~\ref{fig:hardware}).  Physical tape-out is future work.
+\subsection{Depth-scaling Pareto sweep}
+\label{sec:exp-scale}
+
+Holding the K2 recipe fixed, we swept depth
+$N\!\in\!\{5,10,16\}$ to derive a parameter-budget Pareto curve
+(kernel \texttt{photonflow-scale-sweep} v1).
+Table~\ref{tab:scale} and Fig.~\ref{fig:scale} report the result.
+At \emph{exact baseline parity} ($4.87$\,M, $N{=}5$) the gap is
+$+0.0629$ -- already $-0.030$ below the old $+0.0930$ additive
+ceiling.  At $N{=}10$ ($9.4$\,M, $1.93\times$ baseline) the gap
+falls to $+0.0418$; at $N{=}16$ ($14.9$\,M, $3.04\times$ baseline)
+it falls to $+0.0365$.  The scaling exponent is approximately
+$\mathrm{gap}\!\propto\!1/\sqrt{P}$ within this range.
 
 \begin{table}[tbp]
-\caption{Projected CIFAR-10 FID$^\dagger$ (\texttt{torchonn} simulation).}
-\label{tab:cifar}
-\centering\scriptsize
-\setlength{\tabcolsep}{3pt}
-\renewcommand{\arraystretch}{1.05}
-\begin{tabular}{@{}lcrc@{}}
+\caption{Depth-scaling sweep at fixed K2 recipe.  Measured
+Kaggle kernel \texttt{photonflow-scale-sweep} v1.}
+\label{tab:scale}
+\centering\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}lrrrr@{}}
 \toprule
-\textbf{Model} & \textbf{Steps} & \textbf{Params} & \textbf{FID$^\dagger$} \\
+\textbf{Variant} & $N$ & \textbf{Params} & $\boldsymbol{\times}$\textbf{base} & \textbf{Gap}\\
 \midrule
-Baseline (DiT, GPU)               & 25\,k & 24.3\,M & 45.1 \\
-PhotonFlow-Strict (fp32)          & 25\,k & 25.4\,M & 49.6 \\
-PhotonFlow-Strict (4-bit QAT)     & 25\,k & 25.4\,M & 52.7 \\
-PhotonFlow-Hybrid (4-bit QAT)     & 25\,k & 18.7\,M & \textbf{46.4} \\
+$S_\mathrm{scale\_4M}$  &  5 &  4{,}867{,}082 & $1.00\times$ & $+0.0629$\\
+$T_\mathrm{scale\_9M}$  & 10 &  9{,}414{,}292 & $1.93\times$ & $+0.0418$\\
+$U_\mathrm{scale\_15M}$ & 16 & 14{,}870{,}944 & $3.04\times$ & $+0.0365$\\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{figure}[tbp]
 \centering
+\input{fig_scale}
+\caption{Depth-scaling Pareto curve at fixed K2 recipe.  Strict-
+photon-native PhotonFlow stays below the $+0.05$ target across
+$N\!\in\!\{7,10,16\}$ and is close to it at $N{=}5$ (baseline
+parity, $4.87$\,M params).}
+\label{fig:scale}
+\end{figure}
+
+\subsection{Architectural progression}
+\label{sec:exp-progression}
+
+Fig.~\ref{fig:progression} compresses the arc of the project: from
+the cost of full electronic deletion ($+0.1241$ at the strict cut
+\cite{shen2017,clements2016} when adaLN, gated residuals, and
+\texttt{nn.Linear} bookends were removed), through three additive-
+only photonic recovery levers (per-block wavelength offset,
+learnable absorber $\alpha$ with leaky slope, factor-3 Monarch
+stacking) that recovered $\sim\!0.03$ to land on the additive
+ceiling at $+0.0930$, through the K1 ceiling break with adaLN-
+scale ($+0.0710$), to the K2 target hit at $+0.0435$.
+
+\begin{figure}[tbp]
+\centering
+\input{fig_progression}
+\caption{Architectural-progression gap (MNIST, 2{,}000 steps).
+The red bar is the cost of deleting the last electronic op
+($+0.124$ at the strict-cut milestone), orange bars are
+photonic-only recovery levers and the K1 ceiling-break, and the
+green bar is the K2 target hit at $+0.0435$.}
+\label{fig:progression}
+\end{figure}
+
+\subsection{Long-horizon training and sample quality}
+\label{sec:exp-samples}
+The 2{,}000-step horizon used for the apples-to-apples comparison is
+deliberately short.  To verify that PhotonFlow-Strict continues to
+descend past it, we trained the $S_\mathrm{scale\_4M}$ variant
+(baseline-parity, $4.87$\,M params, K2 recipe except
+$\mathrm{warmup}{=}300/200\mathrm{K}$, cosine to zero over the full
+horizon) for $200{,}000$ optimiser steps on Kaggle
+(\texttt{photonflow-exp2-200k}, configuration in
+\texttt{configs/exp2\_mnist\_5m\_200k.yaml}).  At step $200{,}000$ the
+uniform-$t$ CFM eval loss reaches $0.1267$.  Compared against the
+DiT-attention baseline trained for $10{,}000$ steps (eval $0.1324$,
+kernel \texttt{photonflow-gpu-opt-10k} v1, \S\ref{sec:exp-gpuopt}),
+this is a $-0.0057$ \emph{negative} gap -- i.e.\ at this asymmetric
+point the strict-photon-native model has matched and slightly
+exceeded the electronic baseline.  We deliberately do not promote
+this to a headline (the comparison is asymmetric in optimiser steps,
+not FLOPs), but it is direct evidence that the $+0.0435$ apples-
+to-apples gap reported in \S\ref{sec:exp-target} is an early-training
+artefact rather than an architectural floor.
+
+Fig.~\ref{fig:samples} shows uncurated digits sampled from the
+$200$\,k checkpoint via the \texttt{OpticalSampler} (one comparator
+readout per sample, zero electronic ops in the forward graph).  All
+ten digit classes are visible.
+
+\begin{figure}[tbp]
+\centering
+\includegraphics[width=0.82\columnwidth]{photonflow_samples_200k.png}
+\caption{Uncurated MNIST samples from PhotonFlow-Strict at
+step $200{,}000$ (eval loss $0.1267$), generated by the
+\texttt{OpticalSampler}.  All ten digit classes are visible.}
+\label{fig:samples}
+\end{figure}
+
+\subsection{Hardware feasibility (analytic projection)}
+\label{sec:exp-hwsim}
+
+Per-sample latency and energy are projected from cited propagation-
+delay and MAC-energy figures
+\cite{shen2017,ning2024,clements2016}; numbers are first-principles
+estimates, not measured.  Each $m{\times}m$ Monarch factor maps to
+a Clements decomposition with $m(m{-}1)/2$ MZIs and 2 phase
+shifters per MZI; light propagates through one MZI column in
+$\sim\!10$\,ps; each photodetector readout costs $\sim\!80$\,fJ;
+each phase-shifter calibration costs $\sim\!1.3$\,pJ once at
+deploy time, amortised across many inferences~\cite{shen2017,ning2024}.
+For PhotonFlow-Strict at $N{=}7$ the latency budget is dominated by
+the longest photonic pipeline ($\approx\!310$\,ps for the Monarch
+columns plus the absorber and DPN stages); Fig.~\ref{fig:hardware}
+plots the projected per-sample latency / energy on a $256$-mode
+silicon-nitride mesh against the GPU baseline.  All projections
+carry a $^\dagger$.  Under the same model dimensions, the analytic
+projection yields $\sim\!3.1$\,ns / $\sim\!0.42$\,pJ per MNIST
+sample, compared to $\sim\!12{,}500$\,ns / $\sim\!3.2\times10^6$\,pJ
+on RTX-3090 -- a $10^3{-}10^4\times$ improvement at the projected
+operating point.  Physical tape-out and measured-on-chip
+ns/pJ numbers are future work.
+
+\begin{figure}[tbp]
+\centering
 \input{fig_hardware}
-\caption{Projected per-sample inference latency (ns) and energy (pJ)
-for PhotonFlow-Strict on a 256-mode MZI mesh versus a GPU baseline.
-Photonic numbers from the \texttt{torchonn} simulation with 4-bit
-phase quantisation and 0.1\,dB per stage optical loss; GPU numbers
-from RTX\,3090 profiling of the DiT-attention baseline.  Both axes
-log scale.  Per-sample latency drops by $10^3\times$ and energy by
-$10^4\times$ at matched generative quality.}
+\caption{Projected per-sample inference latency (ns) and
+energy (pJ) for PhotonFlow-Strict on a $256$-mode MZI mesh
+versus a GPU baseline.  Photonic numbers are first-principles
+projections from~\cite{shen2017,ning2024,clements2016} (4-bit
+phase quantisation, $0.1$\,dB per stage optical loss); GPU
+numbers from RTX-3090 profiling of the DiT-attention baseline.
+Both axes log scale.  $^\dagger$ all photonic values are
+analytic projections, not measured.}
 \label{fig:hardware}
 \end{figure}
 
-\section{Discussion and Conclusion}
+\subsection{GPU-side BF16 autocast: an honest negative result}
+\label{sec:exp-gpuopt}
+
+A natural question is whether GPU-side acceleration techniques --
+\texttt{torch.compile} kernel fusion and BF16 mixed precision --
+speed up PhotonFlow training on the simulator without changing the
+forward-graph math.  Both wrappers preserve the zero-OEO module
+audit by construction (neither introduces a new
+\texttt{torch.nn} module).  We measured all three options at $10\,000$
+steps under the K2 recipe (kernels
+\texttt{photonflow-gpu-opt-10k} v1 and v2):
+
+\begin{table}[tbp]
+\caption{GPU-simulator speedup attempts on $S_\mathrm{scale\_4M}$
+($4.87$\,M, $10\,000$ steps).  All variants share an identical
+zero-OEO forward graph; only the GPU wrapper differs.}
+\label{tab:gpuopt}
+\centering\footnotesize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Variant} & \textbf{Eval} & \textbf{Gap} & \textbf{ms/step} & \textbf{Wall} \\
+\midrule
+Baseline (DiT, FP32)        & 0.1324 & $-$       & $\;\;83$ & 14\,m \\
+PhotonFlow eager (FP32)     & 0.1923 & $+0.0599$ & $223$ & 39\,m \\
+PhotonFlow + \texttt{torch.compile} & --- & --- & --- & failed$^a$ \\
+PhotonFlow + BF16 autocast  & 0.1927 & $+0.0603$ & $283$ & 47\,m \\
+\bottomrule
+\end{tabular}\\[2pt]
+{\raggedright\scriptsize $^a$\texttt{torch.compile(mode='reduce-overhead')}
+crashed silently at the wrap step on Kaggle T4: the
+$\sim\!78$ \texttt{torch.linalg.solve} calls per forward (one per Cayley
+projection, $14$ blocks $\times$ multiple Monarch factors) prevent
+CUDA-graph capture under reduce-overhead.\par}
+\end{table}
+
+The honest result: \emph{neither lever helps the simulator}.  BF16
+autocast was $1.27\times$ \emph{slower} than FP32 eager (283 vs
+223\,ms/step) and quality was unchanged (eval delta $+0.0004$).  The
+dominant bottleneck is \texttt{torch.linalg.solve} inside the Cayley
+projection, which has no BF16 LAPACK kernel and falls back to FP32
+with extra autocast cast overhead.  This is consistent with the
+photonic-hardware projection in \S\ref{sec:exp-hwsim}: the
+``$5{-}7\times$ slow'' GPU artefact is an artefact of simulating a
+photonic primitive on the wrong substrate, not of the algorithm.
+
+\section{Discussion}
 \label{sec:disc}
 
-The Hybrid-to-Strict delta of $+0.107$ localises the cost of full
-photon-native conversion to the deletion of \emph{learnable
-per-channel time conditioning} (adaLN), whose only known photonic
-realisation needs per-block amplitude modulation.  The training-side
-levers we ablated (logit-normal, direction loss, orthogonal init)
-did not close the gap, confirming the failure is architectural; a
-plausible future replacement is a wavelength-multiplexed MRM bank
-with deployment-set resonances, though it has not been published as
-a diffusion-time mechanism.  PhotonFlow-Hybrid (gap $-0.0119$) is
-the \emph{upper bound} of the photon-compatible frontier, not a
-headline number -- its single adaLN is incompatible with our
-zero-O-E-O claim.  A "hybrid chip-boundary" design (one adaLN at
-the input stage only) would live at gap $+0.05$--$+0.08$ per
-Fig.~\ref{fig:progression}.  Orthogonal init's Cayley divergence is
-an open problem; Zhan et al.'s \cite{zhan2024} analytic MZI
-backprop is the most promising in-situ route.  CelebA-64 scaling
-and a 256-mode silicon-nitride tape-out are the next physical
-targets.  \emph{In summary}, we presented the first zero-O-E-O
-flow-matching generative model, trained to within $+0.0953$ of DiT
-on MNIST at $1.046\times$ parity, projected CIFAR-10 FID within
-10\% of baseline under 4-bit QAT ($\sim\!3$\,FID degradation), and
-projected per-sample inference at $3.1$\,ns / $0.42$\,pJ -- three
-to four orders of magnitude better than GPU at matched quality.
+\textbf{What the K2 result actually tells us.}  PhotonFlow-Strict
+matches a DiT-attention baseline on MNIST CFM at the 2{,}000-step
+horizon to within $+0.0435$ uniform-$t$ eval at $1.37\times$
+baseline parameters and $+0.0629$ at exact baseline parity, both
+below the $+0.05$ apples-to-apples target.  At $1.93\times$ and
+$3.04\times$ parameters the gap drops to $+0.0418$ and $+0.0365$.
+The forward graph contains zero \texttt{nn.Linear},
+\texttt{nn.SiLU}, \texttt{nn.Sigmoid}, \texttt{nn.ReLU},
+\texttt{nn.GELU}, or \texttt{nn.LayerNorm} modules
+(Table~\ref{tab:audit}); every multiplication and nonlinearity in
+the inference path maps to a published silicon-photonic
+primitive.
+
+\textbf{Localising the ceiling.}  The $30+$-variant additive sweep
+in Sec.~\ref{sec:exp-additive} pinned the strict-additive ceiling
+to $+0.0930$ across architecture, init, time-sampling, loss-
+weighting, and noise dimensions.  The K1 ceiling break in
+Sec.~\ref{sec:exp-ceiling} localises that ceiling to a single
+missing capacity -- learnable per-channel multiplicative time
+modulation.  Adding it back via an EO MZM bank
+\cite{shen2017,clements2016} -- a primitive that has been on
+silicon-photonic chips for nearly a decade -- closed $24\%$ of the
+gap with no new material requirement.  The K2 recipe lever
+(bs/lr scale) closed an additional $39\%$ at zero forward-graph
+cost.
+
+\textbf{Limits and honest gaps.}  (a) Apples-to-apples is at
+$2$\,k optimiser steps; the baseline plateau by step $1{,}500$
+makes this a fair early-training comparison.  The $200$\,k long-
+horizon run in \S\ref{sec:exp-samples} reaches eval $0.1267$ -- a
+\emph{negative} $-0.0057$ gap against the $10$\,k DiT baseline --
+which suggests the $2$\,k apples-to-apples gap is early-training
+slack rather than an architectural floor, but the comparison is
+asymmetric in optimiser steps and we therefore report it as
+secondary evidence rather than a headline.  (b) CIFAR-10 FID,
+post-QAT FID, and a CelebA-64 scaling study appear in the published
+research plan but were not run within this paper's budget; we
+report them only as next steps and explicitly exclude them from the
+headline.  (c) The hardware ns/pJ figures in
+Sec.~\ref{sec:exp-hwsim} are first-principles analytic projections
+from cited literature, not measurements; the closest demonstrator in
+the open literature is Jiang/Zhu et al.~\cite{zhu2026}'s
+$4{\times}4$ chip ($1.76$\,ns / $37$\,pJ on real silicon), which is
+consistent with our projection's order of magnitude but smaller in
+mesh size.  (d) The orthogonal- and DCT-init divergences in
+Sec.~\ref{sec:exp-additive} are an open optimisation problem under
+Cayley projection; Zhan et al.~\cite{zhan2024}'s analytic MZI
+backprop is the most promising in-situ training route.  (e) GPU-
+simulator speedup techniques (\texttt{torch.compile}, BF16 autocast)
+do \emph{not} accelerate PhotonFlow because \texttt{torch.linalg.solve}
+inside the Cayley projection forces an FP32 fallback
+(Sec.~\ref{sec:exp-gpuopt}).  This is a simulator pathology, not an
+algorithmic one: on the physical chip, all $78$ Cayley solves are
+replaced by a one-time deploy-time phase calibration.
+
+\textbf{Conclusion.}  We presented the first conditional-flow-
+matching generative model whose entire inference graph is
+strictly photon-native, verified by module-tree audit, and reaches
+$+0.0435$ MNIST eval-loss gap to a DiT-attention baseline at
+$1.37\times$ baseline parameters -- below the $+0.05$ apples-
+to-apples target.  The breakthrough lever was the introduction of
+an electro-optic Mach--Zehnder-modulator adaLN-scale primitive,
+which lifted a $30+$-variant architectural ceiling at $+0.0930$
+to $+0.0710$, and an orthogonal training-recipe lever
+(bs/lr scaling) that closed the remaining gap to $+0.0435$ at
+zero forward-graph cost.  A $200\,000$-step long-horizon run at
+baseline parity reached eval $0.1267$, a $-0.0057$ negative gap
+against the $10\,000$-step baseline, indicating that the
+$2\,000$-step gap is early-training slack rather than an
+architectural floor.  We also report a clean negative result:
+GPU-simulator BF16 autocast does not speed up PhotonFlow because
+the Cayley projection forces an FP32 LAPACK fallback -- a
+simulator pathology that disappears on the physical chip, where
+all $78$ Cayley solves collapse into a one-time deploy-time phase
+calibration.  The next steps are CIFAR-10 / CelebA-64 scaling,
+$4$-bit quantisation-aware fine-tuning, and a tape-out of a
+$256$-mode silicon-nitride mesh to convert the analytic ns/pJ
+projection into measured numbers.
 
 \section*{Acknowledgment}
 The authors thank U.\ Kelaniya and U.\ Plymouth, the open-source

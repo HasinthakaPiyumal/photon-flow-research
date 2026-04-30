@@ -1,16 +1,16 @@
 % fig_traj.tex -- uniform-t CFM eval loss trajectory
-% Included via \input{fig_traj} inside a figure environment.
+% Real Kaggle measurements from photonflow-adaln-recipe-aug v1 (K2).
 \begin{tikzpicture}
 \begin{axis}[
   width=\columnwidth,
-  height=4.6cm,
+  height=4.8cm,
   xlabel={Optimiser step},
-  ylabel={Eval loss},
+  ylabel={Eval loss (uniform-$t$ CFM)},
   xlabel style={font=\footnotesize},
   ylabel style={font=\footnotesize},
   tick label style={font=\scriptsize},
   xmin=400, xmax=2100,
-  ymin=0.15, ymax=0.40,
+  ymin=0.15, ymax=0.42,
   xtick={500,1000,1500,2000},
   ytick={0.15, 0.20, 0.25, 0.30, 0.35, 0.40},
   grid=major, grid style={gray!18, dashed},
@@ -18,40 +18,41 @@
                 text opacity=1,
                 at={(0.98,0.97)}, anchor=north east, row sep=-2pt},
   legend cell align=left,
-  title={\scriptsize MNIST CFM, 2\,k steps, seed 42},
+  title={\scriptsize MNIST CFM, 2\,k steps, seed 42 (Kaggle T4)},
   title style={yshift=-2pt},
 ]
 
-% apples-to-apples target bands (+0.05 and +0.10 above baseline plateau 0.1734)
+% +0.05 target band
 \addplot [domain=400:2100, samples=2, dashed, draw=green!55, thick, forget plot]
   {0.2234};
-\addplot [domain=400:2100, samples=2, dashed, draw=red!55, thick, forget plot]
-  {0.2734};
-
 \node[font=\scriptsize\itshape, anchor=west, text=green!55!black]
-  at (axis cs:520, 0.2288) {$+0.05$ target};
-\node[font=\scriptsize\itshape, anchor=west, text=red!55!black]
-  at (axis cs:520, 0.2790) {$+0.10$ target};
+  at (axis cs:520, 0.2295) {$+0.05$ target};
 
-% baseline trajectory
+% baseline (DiT attention) -- measured
 \addplot [color=pfNorm, thick, mark=*, mark size=1.4pt]
   coordinates {(500,0.2000) (1000,0.1817) (1500,0.1757) (2000,0.1734)};
-\addlegendentry{Baseline (DiT attention)}
+\addlegendentry{Baseline (DiT, 4.89\,M)}
 
-% PhotonFlow A_ref trajectory
+% A_ref (old additive-only ceiling)
+\addplot [color=gray!70, thick, mark=triangle*, mark size=1.4pt]
+  coordinates {(500,0.3904) (1000,0.3312) (1500,0.3062) (2000,0.2664)};
+\addlegendentry{Strict additive ($A_\mathrm{ref}$, 5.11\,M)}
+
+% I_adaln_s_cb576 (K1 winner, ceiling broken)
 \addplot [color=pfPhotonic, thick, mark=square*, mark size=1.3pt]
-  coordinates {(500,0.3804) (1000,0.3303) (1500,0.3075) (2000,0.2687)};
-\addlegendentry{PhotonFlow ($A_\mathrm{ref}$)}
+  coordinates {(500,0.3881) (1000,0.3144) (1500,0.2850) (2000,0.2444)};
+\addlegendentry{+ MZM adaLN-scale (K1, 6.69\,M)}
 
-% final-point gap annotation
-\node[font=\scriptsize, anchor=west, text=pfPhotonic!80!black]
-  at (axis cs:1520, 0.298) {\textbf{gap $+0.0953$}};
-\draw[pharrow, pfPhotonic!80!black]
-  (axis cs:1900,0.293) -- (axis cs:1995,0.272);
+% K_bs256 (K2 winner, TARGET HIT)
+\addplot [color=pfNonlin, thick, mark=diamond*, mark size=1.5pt]
+  coordinates {(500,0.3438) (1000,0.2953) (1500,0.2452) (2000,0.2169)};
+\addlegendentry{+ bs=256, lr=3e-3 (K2, 6.69\,M)}
 
-% "still descending" annotation, placed below legend to avoid overlap
-\node[font=\scriptsize\itshape, anchor=east, text=pfPhotonic!80!black]
-  at (axis cs:1980, 0.325) {still descending};
+% TARGET-HIT annotation
+\node[font=\scriptsize, anchor=west, text=pfNonlin!75!black]
+  at (axis cs:1320, 0.198) {\textbf{gap $+0.0435$ \checkmark}};
+\draw[pharrow, pfNonlin!75!black]
+  (axis cs:1900,0.207) -- (axis cs:1995,0.218);
 
 \end{axis}
 \end{tikzpicture}

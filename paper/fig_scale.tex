@@ -1,0 +1,53 @@
+% fig_scale.tex -- depth scaling sweep at three parameter budgets.
+% Real measurements from Kaggle photonflow-scale-sweep v1 (S/T/U) using K2 recipe.
+\begin{tikzpicture}
+\begin{axis}[
+  width=\columnwidth,
+  height=4.8cm,
+  xlabel={Parameters [millions]},
+  ylabel={Eval gap vs.\ baseline},
+  xlabel style={font=\footnotesize},
+  ylabel style={font=\footnotesize},
+  tick label style={font=\scriptsize},
+  xmin=4, xmax=16,
+  ymin=0.025, ymax=0.075,
+  xtick={4.87, 6.69, 9.41, 14.87},
+  xticklabels={4.87, 6.69, 9.41, 14.87},
+  ytick={0.03, 0.04, 0.05, 0.06, 0.07},
+  grid=major, grid style={gray!18, dashed},
+  legend style={font=\scriptsize, draw=gray!35, fill=white,
+                at={(0.98,0.97)}, anchor=north east, row sep=-2pt},
+  legend cell align=left,
+  title={\scriptsize Depth scaling at fixed K2 recipe (2\,k steps)},
+  title style={yshift=-2pt},
+]
+
+% +0.05 target line
+\addplot [domain=4:16, samples=2, dashed, draw=red!55, thick, forget plot]
+  {0.05};
+\node[font=\scriptsize\itshape, anchor=west, text=red!55!black]
+  at (axis cs:4.2, 0.0535) {$+0.05$ target};
+
+% scale sweep points
+\addplot [color=pfPhotonic, thick, mark=square*, mark size=2.0pt]
+  coordinates {(4.87, 0.0629) (6.69, 0.0435) (9.41, 0.0418) (14.87, 0.0365)};
+\addlegendentry{PhotonFlow-Strict (K2 recipe)}
+
+% annotations
+\node[font=\scriptsize, anchor=south west, text=pfPhotonic!85!black]
+  at (axis cs:4.87, 0.0635) {$N{=}5$ blocks};
+\node[font=\scriptsize, anchor=south, text=pfPhotonic!85!black]
+  at (axis cs:6.69, 0.0445) {$N{=}7$ (K2)};
+\node[font=\scriptsize, anchor=south, text=pfPhotonic!85!black]
+  at (axis cs:9.41, 0.0428) {$N{=}10$};
+\node[font=\scriptsize, anchor=south, text=pfPhotonic!85!black]
+  at (axis cs:14.87, 0.0375) {$N{=}16$};
+
+% baseline parity vertical
+\addplot [domain=0.030:0.075, samples=2, dotted, draw=gray!55, thick, forget plot]
+  ({4.89},{x});
+\node[font=\scriptsize\itshape, anchor=south west, text=gray!55!black]
+  at (axis cs:4.89, 0.030) {baseline parity};
+
+\end{axis}
+\end{tikzpicture}

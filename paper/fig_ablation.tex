@@ -1,21 +1,21 @@
-% fig_ablation.tex -- four-variant ablation gap deltas
-% Included via \input{fig_ablation} inside a figure environment.
+% fig_ablation.tex -- conditioning-bottleneck sweep on adaLN-scale
+% Measured (Kaggle photonflow-adaln-scale v1).
 \begin{tikzpicture}
 \begin{axis}[
   width=0.98\columnwidth,
   height=4.9cm,
   ybar,
-  bar width=10pt,
-  xlabel={Training-recipe variant},
+  bar width=11pt,
+  xlabel={\scriptsize Conditioning width $H_c$},
   ylabel={Gap vs.\ baseline},
   xlabel style={font=\footnotesize},
   ylabel style={font=\footnotesize},
   tick label style={font=\scriptsize},
-  ymin=0, ymax=0.28,
-  ytick={0, 0.05, 0.10, 0.15, 0.20, 0.25},
-  symbolic x coords={Ref, Logit, DirLoss, Ortho},
+  ymin=0, ymax=0.12,
+  ytick={0, 0.025, 0.05, 0.075, 0.10},
+  symbolic x coords={Add, H128, H288, H576},
   xtick=data,
-  xticklabels={PhotonFlow\\-Strict (ref), Logit-normal\\timestep, Direction\\loss, Orthogonal\\init},
+  xticklabels={Additive\\(no MZM), MZM\\$H_c{=}128$, MZM\\$H_c{=}288$, MZM\\$H_c{=}576$},
   xticklabel style={rotate=18, anchor=east, align=center, font=\tiny},
   nodes near coords,
   nodes near coords style={font=\scriptsize, /pgf/number format/fixed,
@@ -23,34 +23,27 @@
   every node near coord/.append style={yshift=1pt},
   grid=major, grid style={gray!18, dashed},
   enlarge x limits=0.18,
-  title={\scriptsize Ablation sweep (2\,000 steps, seed 42)},
+  title={\scriptsize Ceiling break: adaLN-scale (electro-optic MZM) sweep},
   title style={yshift=-2pt},
 ]
 
-% architectural ceiling band 0.08 -- 0.10
-\fill[gray!18] (axis cs:Ref, 0.08) rectangle (axis cs:Ortho, 0.10);
-
-% reference line at +0.05 target
+% +0.05 target line
 \addplot[sharp plot, dashed, thick, red!55, forget plot]
-  coordinates {(Ref, 0.05) (Ortho, 0.05)};
+  coordinates {(Add, 0.05) (H576, 0.05)};
 
-% bars (one plot per colour, so the colours render distinctly)
-\addplot[fill=pfNonlin!70, draw=pfNonlin!90]
-  coordinates {(Ref, 0.0953)};
-\addplot[fill=pfWave!80, draw=pfWave!90]
-  coordinates {(Logit, 0.1144)};
-\addplot[fill=gray!40, draw=gray!60]
-  coordinates {(DirLoss, 0.0953)};
-\addplot[fill=pfElec!80, draw=pfElec!95]
-  coordinates {(Ortho, 0.2465)};
+\addplot[fill=gray!50, draw=gray!75]
+  coordinates {(Add, 0.0930)};
+\addplot[fill=pfPhotonic!50, draw=pfPhotonic!85]
+  coordinates {(H128, 0.0834)};
+\addplot[fill=pfPhotonic!70, draw=pfPhotonic!95]
+  coordinates {(H288, 0.0798)};
+\addplot[fill=pfPhotonic!95, draw=pfPhotonic!95]
+  coordinates {(H576, 0.0710)};
 
-% ceiling label
-\node[font=\scriptsize\itshape, anchor=west, text=gray!55!black]
-  at (axis cs:Ref, 0.115) {architectural ceiling};
-
-% +0.05 target label
-\node[font=\scriptsize\itshape, anchor=east, text=red!55!black]
-  at (axis cs:Ortho, 0.038) {$+0.05$ target};
+\node[font=\scriptsize\itshape, anchor=west, text=red!55!black]
+  at (axis cs:Add, 0.058) {$+0.05$ target};
+\node[font=\scriptsize\itshape, anchor=south, text=gray!55!black, align=center]
+  at (axis cs:Add, 0.098) {old\\ceiling};
 
 \end{axis}
 \end{tikzpicture}

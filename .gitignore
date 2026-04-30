@@ -65,3 +65,6 @@ MISMATCHES.md
 .claude/scheduled_tasks.lock
 
 paper/lit-review/**/*.png
+
+# GPU-opt sample-grid comparison (large PNGs, derived from kaggle output)
+outputs/exp_gpu_opt_compare/
