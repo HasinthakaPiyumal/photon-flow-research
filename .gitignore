@@ -68,3 +68,18 @@ paper/lit-review/**/*.png
 
 # GPU-opt sample-grid comparison (large PNGs, derived from kaggle output)
 outputs/exp_gpu_opt_compare/
+
+# ---- LaTeX build artefacts ----
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.toc
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.synctex.gz
+paper/_qa_pages/
+
+# Stale Kaggle output downloads (large, retrievable on demand)
+kaggle_output/
