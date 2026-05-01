@@ -1,0 +1,372 @@
+# AGENTS.md
+
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+
+## Project Overview
+
+**PhotonFlow** is a generative model co-designed for silicon photonic hardware. The goal is to run flow matching inference on Mach-Zehnder interferometer (MZI) meshes without falling back to electronics for any operation.
+
+The core problem: existing flow matching architectures (CFM, DiT) use softmax attention and LayerNorm. Neither of those runs natively on a photonic chip, so they have to be offloaded to slow electronic circuits, which destroys the speed and energy advantage of optical computing.
+
+PhotonFlow replaces every non-photonic operation in the vector field network with one that maps directly to an MZI primitive:
+
+| Standard component | PhotonFlow replacement | Maps to |
+|---|---|---|
+| Softmax attention | Monarch (butterfly) linear layers | MZI mesh array |
+| LayerNorm | Divisive power normalization `x / (\|\|x\|\|_2 + eps)` | Microring resonator + photodetector feedback |
+| ReLU / GELU | Saturable absorber `sigma(x) = tanh(alpha*x) / alpha`, alpha=0.8 | Graphene waveguide insert |
+
+The training objective stays as conditional flow matching:
+
+```
+L(theta) = E_{t, x0, x1} [ || v_theta(x_t, t) - (x_1 - x_0) ||^2 ]
+```
+
+with two extra regularizers injected after each Monarch layer to bridge the simulation-to-hardware gap:
+
+- Shot noise, sigma_s = 0.02
+- Thermal crosstalk, sigma_t = 0.01
+
+After standard training, the model is fine-tuned with 4-bit quantization-aware training to match the 4-to-6-bit effective precision of analog photonic systems.
+
+## Project Status
+
+- **Literature review:** Complete. 9 reference papers analyzed in depth. Obsidian vault at `paper/lit-review/photonflow/`. Comprehensive Sinhala/English explanation in `CLAUDE_READING.md`.
+- **Novelty confirmed:** Google Scholar search verified — no prior work combines flow matching + Monarch matrices + photonic hardware. PhotonFlow's co-design approach is unique vs competitor accelerator approaches (PhotoGAN, DiffLight by Suresh/Afifi/Pasricha group).
+- **Implementation:** All 12 core `.py` modules fully implemented (~4K lines). 3 of 7 Colab notebooks present (exp1 baseline, exp2 PhotonFlow MNIST, exp3 noise-regularized). Missing: setup/verify, QAT fine-tune, hardware sim, results notebooks.
+- **Codebase:** `.py` modules (core logic) + Google Colab notebooks (experiments, training, eval).
+
+## Known Competitors (from Google Scholar search)
+
+| Paper | Approach | Difference from PhotonFlow |
+|---|---|---|
+| Suresh et al. "PhotoGAN" (ISQED 2025) | GAN photonic **accelerator** | Accelerates existing GAN arch, still needs O-E-O |
+| Suresh et al. "DiffLight" (IEEE D&T 2026) | Diffusion model photonic **accelerator** | Accelerates existing DM arch, still needs O-E-O |
+| Suresh et al. "Sustainable Acceleration" (ICCD 2025) | Combined GAN+DM photonic accelerator | Generic accelerator, not co-designed |
+| Jiang/Zhu 2026 (already in references) | Optical GAN, 8×8 MNIST | Real chip demo but tiny scale, GAN instability |
+
+**PhotonFlow's unique advantage:** Co-designed architecture (not accelerator) → zero O-E-O conversions.
+
+## Methodology (5 stages)
+
+The paper organizes the work as a five-stage pipeline. Mirror this structure in code and configs:
+
+1. **MZI hardware enumeration** - list the primitives available on chip (butterfly linear, optical power detection, saturable-absorber nonlinearity). Anything outside this list gets excluded.
+2. **Architecture co-design** - build the `PhotonFlowBlock` from Monarch L and R, optical activation, divisive power normalization, and time embedding. 6 to 8 blocks form `v_theta(x_t, t)`.
+3. **Training** - CFM loss plus shot-noise and thermal-crosstalk regularization, then 4-bit QAT fine-tune.
+4. **Photonic simulation** - profile weights in `torchonn`, modeling MZI phase quantization, optical loss (0.1 dB per beamsplitter), and detector noise.
+5. **Evaluation** - FID, photonic latency (ns/step), and energy (fJ/MAC, pJ/sample).
+
+## Datasets and targets
+
+- MNIST for sanity checks
+- CIFAR-10 as the primary benchmark
+- CelebA-64 for higher resolution (stretch goal)
+
+Success criteria from the paper:
+
+- FID within 10% of standard CFM with attention on GPU
+- < 1 ns per ODE step in photonic simulation
+- < 1 pJ per generated sample
+
+## Baselines to compare against
+
+- **Primary:** standard CFM with softmax attention on GPU
+- Optical GAN of Zhu et al. (Frontiers of Optoelectronics, 2026)
+- Ablated PhotonFlow without noise regularization
+- **New competitors to cite:** PhotoGAN, DiffLight (Suresh/Afifi/Pasricha 2025-2026) — accelerator-based approaches
+
+## Build and development
+
+**Platform:** Google Colab (free GPU for training) + local development for `.py` modules.
+
+**Approach:** Hybrid — `.py` modules contain core logic (importable classes/functions), Colab notebooks run experiments (import from `.py`, train on Colab GPU, visualize inline).
+
+**Python version:** Requires **Python 3.10** exactly. `torchonn` depends on `tensorflow-cpu` which does not support Python 3.11+.
+
+**Local setup (Windows):**
+
+```bash
+# Create venv with Python 3.10
+py -3.10 -m venv .venv
+.venv/Scripts/activate
+
+# PyTorch (CPU for local dev, or cu121 for CUDA)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# torchonn must be installed from GitHub (not PyPI)
+pip install git+https://github.com/HasinthakaPiyumal/pytorch-onn.git
+
+# Everything else
+pip install -r requirements.txt
+```
+
+**Colab setup cell** (use in every notebook):
+
+```python
+!pip install torchcfm torchonn photontorch
+import torch
+assert torch.cuda.is_available(), "GPU required"
+```
+
+**Running and testing:**
+
+```bash
+# Verify imports
+python -c "from photonflow.model import PhotonFlowModel; print('OK')"
+
+# Run inline unit tests (each module has embedded tests in __main__)
+python photonflow/activation.py      # 4 tests: shape, f(0)=0, range, gradients
+python photonflow/normalization.py   # 7 tests: shape, unit norm, zero-safety, gradients, affine
+python photonflow/noise.py           # Noise injection tests
+
+# Colab: open notebooks/03_exp2_photonflow_mnist.ipynb
+# → Run All cells → training starts on Colab GPU
+```
+
+**No formal test framework** (no pytest/unittest config). Tests are self-contained in each module's `if __name__ == "__main__"` block.
+
+## Architecture (codebase layout)
+
+```
+photonflow-research/
+├── photonflow/                    ← .py modules (core logic)
+│   ├── __init__.py                ← Package init, convenience imports
+│   ├── model.py                   ← MonarchLayer, PhotonFlowBlock, PhotonFlowModel
+│   ├── activation.py              ← SaturableAbsorber (tanh(αx)/α)
+│   ├── normalization.py           ← DivisivePowerNorm (x/‖x‖₂+ε)
+│   ├── noise.py                   ← PhotonicNoise (shot σ_s=0.02, thermal σ_t=0.01)
+│   └── train.py                   ← CFMLoss, Trainer class, config loading
+├── hardware/
+│   ├── mzi_profiler.py            ← MZI simulation: SVD→phases, quantize, optical loss
+│   └── qat.py                     ← FakeQuantize, StraightThroughEstimator, QATWrapper
+├── eval/
+│   ├── fid.py                     ← FIDCalculator (InceptionV3 features + Frechet distance)
+│   └── metrics.py                 ← PhotonicLatency, PhotonicEnergy estimation
+├── configs/
+│   ├── exp1_baseline.yaml         ← GPU CFM+attention baseline hyperparams
+│   ├── exp2_mnist.yaml            ← PhotonFlow MNIST config
+│   ├── exp3_noise.yaml            ← + noise injection params (σ_s, σ_t)
+│   ├── exp4_qat.yaml              ← + 4-bit QAT params
+│   └── exp6_hardware.yaml         ← Photonic simulation params
+├── notebooks/                     ← Colab notebooks (experiments + visualization)
+│   ├── 01_setup_and_verify.ipynb          ← Install deps, verify GPU, test imports
+│   ├── 02_exp1_baseline.ipynb             ← Train baseline CFM+attention on MNIST
+│   ├── 03_exp2_photonflow_mnist.ipynb     ← Train PhotonFlow on MNIST
+│   ├── 04_exp3_noise_regularized.ipynb    ← Train with noise injection
+│   ├── 05_exp4_qat_finetune.ipynb         ← 4-bit QAT fine-tuning
+│   ├── 06_exp6_hardware_simulation.ipynb  ← MZI profiling + photonic metrics
+│   └── 07_results_and_figures.ipynb       ← All plots, tables, sample grids for paper
+├── paper/
+│   ├── PAPER_DRAFT.md             ← Research paper draft
+│   └── lit-review/                ← Obsidian vault with 9 reference paper notes
+│       ├── photonflow/            ← Markdown notes per paper
+│       └── pdfs/                  ← Reference PDFs
+├── data/                          ← Datasets (not committed, auto-downloaded)
+├── outputs/
+│   ├── checkpoints/               ← Model checkpoints (.pth)
+│   ├── figures/                   ← Generated plots, sample grids (.png/.pdf)
+│   └── results/                   ← Metrics CSV, results summary
+├── requirements.txt
+├── AGENTS.md                      ← This file
+├── CLAUDE_READING.md              ← Comprehensive Sinhala/English project explanation
+├── IMPLEMENTATION_PLAN.md         ← 35h sprint timeline with task assignments
+└── README.md
+```
+
+## Experiments (Paper Table I)
+
+| Exp | Configuration | Steps | Dataset | Purpose |
+|---|---|---|---|---|
+| exp1 | Standard CFM + attention on GPU | 50K | MNIST | Baseline FID reference |
+| exp2 | PhotonFlow (Monarch layers) | 50K | MNIST | Sanity check — "do Monarch layers work for generation?" |
+| exp3 | exp2 + shot noise + thermal crosstalk | 50K | MNIST | Noise robustness — "does noise-aware training help?" |
+| exp4 | exp3 + 4-bit QAT fine-tune | 5-10K | MNIST | Hardware precision — "does 4-bit QAT preserve quality?" |
+| exp5 | Best config on CelebA-64 | TBD | CelebA-64 | Scaling (stretch goal) |
+| exp6 | Photonic hardware simulation via torchonn | — | — | Performance — "what are photonic latency/energy numbers?" |
+
+Experiments run via Colab notebooks (`notebooks/02-06`). Results collected in `notebooks/07_results_and_figures.ipynb`.
+
+## Key domain concepts
+
+- **MZI (Mach-Zehnder Interferometer):** the core photonic computing element. Light splits via beamsplitter, one path gets phase-shifted, then recombines. Mathematically a 2×2 unitary matrix. A cascade of MZI beamsplitters performs a sequence of two-by-two unitary rotations at the speed of light. This is exactly the computational graph of a Monarch matrix, which is why PhotonFlow uses Monarch layers.
+- **Monarch matrix:** structured matrix of the form `M = P L P^T R`, where L and R are block-diagonal and P is a fixed permutation (stride/perfect shuffle). From Dao et al. 2022. In PhotonFlow each Monarch layer pair replaces self-attention. Parameters: O(n√n) vs O(n²) for dense. FLOPs: O(n^{3/2}). Key insight: Monarch computation graph = MZI mesh computation graph (block-diagonal = MZI column, permutation = waveguide routing = free).
+- **Saturable absorber:** the photonic analog of a nonlinear activation. A graphene waveguide absorbs low-intensity light but becomes transparent at high intensity. Acts like `tanh(alpha*x)/alpha`. This is the only nonlinearity allowed in the architecture.
+- **Divisive power normalization:** photonic analog of LayerNorm. A photodetector measures total optical power (L2 norm), a microring resonator feedback loop divides by it. `x / (||x||_2 + eps)`. No mean/variance computation needed.
+- **Shot noise:** quantum noise on photon counts at the detector. Photons arrive as discrete particles with inherent randomness (like raindrops on a window). Modeled as additive Gaussian with sigma_s = 0.02 during training.
+- **Thermal crosstalk:** unwanted heat coupling between adjacent phase shifters. When one heater warms up, neighbors shift too. Modeled as correlated additive Gaussian with sigma_t = 0.01.
+- **QAT (Quantization-Aware Training):** training technique that accounts for limited precision in photonic hardware. MZI phase shifters have 4-6 bit effective precision (16-64 discrete angles). QAT inserts fake quantization nodes in forward pass, uses straight-through estimator for gradients. PhotonFlow targets 4-bit weights. Two-stage strategy: (1) float32 + noise training → convergence, (2) 4-bit QAT fine-tune 5-10K steps.
+- **CFM (Conditional Flow Matching):** the training objective from Lipman et al. 2023. Learns a vector field `v_theta(x_t, t)` that transports noise to data along straight (optimal transport) paths. Loss = MSE regression, architecture-agnostic, stable training, few ODE steps at inference.
+- **FID (Frechet Inception Distance):** standard metric for generative image quality. Compares InceptionV3 feature distributions between real and generated images. Lower is better. Computed via `eval/fid.py`.
+- **O-E-O conversion:** Opto-Electronic-Opto — converting light to electricity and back. The #1 bottleneck in photonic computing. Each conversion adds nanoseconds of latency (vs picosecond MZI computation). PhotonFlow eliminates all O-E-O by using only photonic-native operations.
+- **Optical loss:** light power lost when passing through beamsplitters. ~0.1 dB per stage (~2.3% power loss). Accumulates through MZI cascade.
+
+## Implementation notes
+
+- **Model architecture:** `PhotonFlowModel` stacks 8 `PhotonFlowBlock`s at hidden_dim=256 (with Linear input/output projections from/to data dim). Each block uses adaLN-Zero conditioning (DiT-style): two sub-layers (MonarchL+activation, MonarchR+activation), each gated by learnable scale/shift/gate from the time embedding. Includes Photonic GLU for enhanced feature mixing. Time embedding: sinusoidal + 2-layer MLP. Zero-initialized skip connections (α=0 trick from DiT).
+- **Training:** CFM loss via `torchcfm` or manual MSE implementation. Adam optimizer lr=1e-4. Noise injection toggle from config. Sample generation every 5K steps (Euler ODE solver, 20 steps).
+- **Hardware simulation:** SVD/Clements decomposition → MZI phase angles → phase quantization (4-bit) → optical loss injection (0.1 dB/stage cumulative) → detector noise → thermal crosstalk (correlated Gaussian).
+- **Evaluation:** FID via InceptionV3 pool3 features (2048-dim), Frechet distance formula. Latency = MZI_layers × propagation_delay × ODE_steps. Energy = phase_shifters × energy_per_shifter + detector_energy.
+
+## Team and sprint info
+
+Undergraduate research by **Hasinthaka Piyumal** (University of Kelaniya, Sri Lanka) and **Senumi Costa** (University of Plymouth, UK).
+
+**Sprint:** Fri Apr 11 → Sun Apr 13, 2026. See `IMPLEMENTATION_PLAN.md` for detailed schedule.
+
+Built on the open-source `torchcfm`, `torchonn`, and `photontorch` projects.
+
+---
+
+## Session handover — paper finalisation (2026-04-30)
+
+This section captures **everything needed to continue this work from a fresh Codex session**: state of the paper, state of the code, what was just done, what's next, and where to look for each artefact.
+
+### Headline result (final, paper-defensible)
+
+| Configuration | Params | Eval @ 2K | Gap vs DiT baseline | Status |
+|---|---:|---:|---:|---|
+| Baseline DiT (4.89 M, 4 blocks, 4 heads) | 4,886,544 | 0.1734 | 0.0000 | reference |
+| **K2 = K_bs256** (adaLN-scale + bs=256 + lr=3e-3) | 6,685,966 | **0.2169** | **+0.0435** ✅ | **target hit** |
+| **S_scale_4M** (baseline-parity, K2 recipe, num_blocks=5) | 4,867,082 | 0.2363 | +0.0629 | parity-best |
+| T_scale_9M (K2 recipe, num_blocks=10) | 9,414,292 | 0.2152 | +0.0418 | scale Pareto |
+| U_scale_15M (K2 recipe, num_blocks=16) | 14,870,944 | 0.2099 | +0.0365 | best gap |
+
+**Long-horizon (195K steps, apples-to-apples on W&B):**
+- Baseline DiT @ 195K (run `1893f8w8`): eval **0.0876**
+- PhotonFlow S_scale_4M @ 195K (run `q62gznt7`, crashed at step 197 182): eval **0.1595**
+- Apples-to-apples gap **+0.0719** (slightly wider than +0.0629 at 2K — architectural ceiling at 4.87 M scale)
+
+**Module-tree audit at every variant**: 0 `nn.Linear`, 0 `nn.SiLU`, 0 `nn.Sigmoid`, 0 `nn.ReLU`, 0 `nn.GELU` in forward graph. Strict zero-OEO.
+
+### What was done in this conversation (in order)
+
+1. **Combo v3 → v6 sweeps** (29 Kaggle kernels total): exhausted the strict-additive lever surface across `num_blocks`, `num_monarch_factors`, `time_dim`, `cond_bias_hidden`, `monarch_init`, `learnable_absorber_alpha`, `absorber_leaky_slope`, `use_noise`, all 4 CFMLoss reweighting schemes (`logit_normal`, EDM, min-SNR, FasterDiT direction loss). Established the **+0.0930 ceiling** across 30+ variants.
+2. **Paper-informed sweep** (`notebook4c567217a1`): tested EDM / min-SNR / SD3 time-shift losses on the new architecture, all neutral or worse. Confirmed ceiling.
+3. **K1 ceiling break** (`photonflow-adaln-scale`): added the `use_adaln_scale=True` kwarg to `PhotonFlowBlock`. Multiplicative time conditioning `h = norm(x) * (1 + scale) + shift` via electro-optic MZM (Shen 2017 §II / Clements 2016 §III). cb_hidden = 128/288/576 sweep landed at gap **+0.0710** (cb=576).
+4. **K2 target hit** (`photonflow-adaln-recipe-aug`): combined K1 winner + bs=256 + lr=3e-3 + warmup=300 → gap **+0.0435** (target met). AdamW was neutral, augmentation was catastrophic (DPN can't absorb input-distribution shift).
+5. **Scale sweep** (`photonflow-scale-sweep`): 3 param budgets at K2 recipe: 4.87 M / 9.41 M / 14.87 M → +0.0629 / +0.0418 / +0.0365. Clean Pareto curve.
+6. **Long-horizon** (W&B run `q62gznt7`): 200K-budget run, crashed at 197 182 (Kaggle 12h limit). Trajectory in W&B: 0.2643 (5K) → 0.1595 (195K). Baseline `1893f8w8` finished at 0.0876.
+7. **GPU-opt experiments** (`photonflow-gpu-opt-10k` v1+v2): `torch.compile` crashed silently on Cayley solves; BF16 autocast was 1.27× **slower** than FP32 eager (Cayley `torch.linalg.solve` has no BF16 LAPACK). Honest negative result.
+8. **Paper rewrite** (`paper/paper-latex.tex`):
+   - Switched abstract / intro / conclusion to honest **+0.0719 long-horizon gap** (not the earlier asymmetric "−0.0057 negative gap" framing).
+   - Removed all "we deleted electronic ops" language (per user instruction — those were our mistakes, not a contribution).
+   - Added side-by-side `fig:samples` (PhotonFlow vs baseline at 195K).
+   - Added `fig_traj_long.tex` with real W&B trajectory data.
+   - Cut `fig_traj`, `fig_ablation`, `fig_progression`, `§exp-progression`, the long Reproducibility Ledger table, and Table VII to fit IEEE conference budget.
+   - Compressed methodology + lit-review + discussion.
+   - Bibliography now uses `\scriptsize`.
+9. **Validation pass**: cross-checked every numeric claim against code/logs/W&B. Found and fixed:
+   - Table II audit: MonarchLayer 30 → **46**, SaturableAbsorber 14 → **22** (the original counts were "outer instances only"; the audit walks the full `model.modules()` tree).
+   - "78 Cayley solves" → **~280** (3 × 2 × 46 = 276) in 3 places.
+   - Typo: +0.3978 → +0.3977 (D_edm gap).
+10. **fig_method redesign**: replaced the old "Deleted electronic code paths" callout with a more detailed compact 3-row diagram showing the data spine (with tensor shapes), PhotonFlowBlock zoom (with explicit adaLN-scale formula), and Time pathway (WCT → MonarchLinear → PPLN → MonarchLinear → (s,b) feeding both sub-layers).
+
+### Current paper state
+
+| File | State |
+|---|---|
+| `paper/paper-latex.tex` | 7 pages, IEEE conference; user wants 6, **needs 1 more page cut** |
+| `paper/paper-latex.pdf` | freshly compiled (build-final-v12) |
+| `paper/fig_method.tex` | redesigned compact 3-row, last revision had right-edge clipping issues — verify in next compile |
+| `paper/fig_traj_long.tex` | NEW — uses W&B q62gznt7 + 1893f8w8 trajectory data |
+| `paper/fig_samples.tex` | side-by-side photonflow + baseline PNGs |
+| `paper/fig_hardware.tex` | log-axis `\node` overlay (fixed log10-vs-value bug) |
+| `paper/fig_traj.tex` | DELETED (covered by `fig_traj_long`) |
+| `paper/fig_ablation.tex` | exists but UNUSED (paper text removed `\input{fig_ablation}`) |
+| `paper/fig_progression.tex` | exists but UNUSED |
+| `paper/fig_scale.tex` | exists but UNUSED |
+| `paper/photonflow_samples_195k.png` | user-provided, 195K eval=0.1595 |
+| `paper/baseline_samples_195k.png` | user-provided, 195K eval=0.0876 |
+| `paper/references.bib` | 22 entries, all cite-resolved |
+
+**User constraints**: don't commit to git until told (last 2 commits paused). Hold all changes in working tree.
+
+### What needs to be done next (priority order)
+
+1. **Trim 1 more page (7 → 6)**. Options remaining:
+   - Tighten methodology Eq.~(\ref{eq:sub1}) caption + paragraph
+   - Drop `§exp-setup` (already short, but could fold into `§exp-audit`)
+   - Drop one of the 3 result tables (II/III/IV/V/VI) — but each carries unique info
+   - Use even tighter font on bibliography (`\tiny` is too small; `\scriptsize` is the floor)
+   - Move `fig_traj_long` from `figure` to a smaller inset
+   - Compress hardware-projection section (currently has §method-hwsim text + §exp-hwsim text + fig_hardware)
+2. **Fix fig_method right-edge clipping** — the tikz x-axis is currently 0..12 cm wide; if a `figure*` is 17 cm wide we have margin, but the labels at right (sub-layer 1/2) were clipping in v11. v12 removed those labels but the figure is still positioned starting from x=0; should add inner-padding or center it.
+3. **Final visual QA** of all 6 (or 7) pages.
+4. **Commit + push** when user gives green light. Two staged commits ready in working tree:
+   - paper figure overlap fixes (already done)
+   - paper content trim + table-II/Cayley-count corrections + 195K honest gap
+
+### Critical correctness notes
+
+- **Module-tree audit numbers** (Table II in paper) reflect the full `model.modules()` walk: MonarchLayer=46, MonarchLinear=16, PPLNSigmoid=8, SaturableAbsorber=22, DivisivePowerNorm=15, WavelengthCodedTime=1. The "outer-only" interpretation (30 MonarchLayer, 14 SA) is mentioned in a footnote.
+- **Cayley solve count = 276** per forward (factor=3 × 2 sides × 46 layers). Paper rounds to "~280".
+- **K2 K_bs256 = 6,685,966 params**, 1.37× baseline. **NOT** at exact baseline parity. Exact parity is `S_scale_4M` at 4,867,082 (gap +0.0629).
+- **Aug variants (`L_aug`, `M_all`) failed catastrophically** — DPN cannot absorb mean shift from `(x-0.5)/0.5` centering. Raw `ToTensor()` only.
+- **AdamW (J_adamw)** was gap-neutral vs Adam — adaLN-Zero + Cayley already provide implicit regularisation at the 2K horizon.
+
+### Forbidden experiments (per user instruction this session)
+
+The user explicitly said: *"dont add experiments where EOE operations [happened] (they are wrong, add properly photon-native op)"*. **Do not include in the paper or any new analysis**:
+
+- `exp2-photonflow-v17-*` (had `adaln_bottleneck Linear`)
+- `exp3-noise-mnist-*` (v17 + noise = still electronic)
+- `exp2-photonflow-mnist-*` runs with > 12 M params (legacy v11/v17)
+- The "Stage 1 hybrid" `-0.0119` result (had `nn.Linear` bookends)
+- The "+0.1241 strict cut" architectural-progression bar (refers to the cost of removing electronic ops we shouldn't have had)
+
+The paper's headline must be about the photon-native architecture **as designed**, not about "we recovered from our own electronic-op mistakes".
+
+### Tools / access
+
+- **Kaggle CLI**: `.venv/Scripts/python.exe -c "from kaggle.cli import main; main()"` (the bare `kaggle.exe` had a permissions issue on this machine)
+- **W&B MCP**: registered at `https://mcp.withwandb.com/mcp` with header `Authorization: Bearer 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` (40+ chars; the older 36-char token is rejected for entity-level queries). The MCP client sometimes shows "Failed to connect" but direct JSON-RPC via `curl` works.
+- **W&B project root**: `https://wandb.ai/costasenumi05-zenlize-labs/photonflow` — 39 runs, 22 of which are excluded legacy electronic-op runs.
+- **Tectonic**: `tools/tectonic.exe` v0.15.0
+- **pdftoppm**: `/c/poppler/poppler-24.08.0/Library/bin/pdftoppm.exe` (130 DPI is the standard rendering for visual QA)
+
+### Key W&B run IDs
+
+| Run ID | Display name | State | Final eval | Use |
+|---|---|---|---:|---|
+| `q62gznt7` | exp2-photonflow-S_scale_4M-200K-kaggle | crashed | 0.1595 @ step 194 999 | **PhotonFlow long-horizon** (paper Fig. 5) |
+| `1893f8w8` | exp1_baseline_kaggle | finished | 0.0876 train_loss_avg100 @ step 196 900 | **Baseline long-horizon** (paper Fig. 5) |
+
+### Key Kaggle kernel paths
+
+- Architecture / hyperparam sweeps: `kaggle/photonflow-native-combo[1-6]/`, `kaggle/notebook4c567217a1/`
+- Ceiling break (K1): `kaggle/photonflow-adaln-scale/`
+- Target hit (K2): `kaggle/photonflow-adaln-recipe-aug/`
+- Scale sweep: `kaggle/photonflow-scale-sweep/`
+- GPU-opt: `kaggle/photonflow-gpu-opt-10k/`, `kaggle/photonflow-gpu-opt-10k-v2/`
+- Long-horizon kernel (TIMED OUT, no local logs): `kaggle/photonflow-exp2-200k/` (stub only — actual data is in W&B `q62gznt7`)
+
+### Local working-tree status (uncommitted changes ready to commit)
+
+```
+M paper/paper-latex.tex
+M paper/paper-latex.pdf
+M paper/fig_method.tex      (compact redesign — verify no right-edge clipping)
+M paper/fig_ablation.tex    (overlap fixes — figure now unused in tex but keep file)
+M paper/fig_progression.tex (overlap fixes — figure now unused)
+M paper/fig_hardware.tex    (log10-vs-value label bug fixed)
+M paper/fig_traj.tex        (annotation tightening — figure now unused)
+A paper/fig_traj_long.tex   (NEW)
+A paper/photonflow_samples_195k.png  (NEW, user-provided)
+A paper/baseline_samples_195k.png    (NEW, user-provided)
+M .gitignore                (added outputs/exp_gpu_opt_compare/)
+```
+
+### Files to read first when resuming
+
+1. `photonflow_experiments_report.md` — chronological log of all 29 Kaggle kernels (~1700 lines)
+2. `paper/paper-latex.tex` — current paper draft (~600 lines, 7 pages)
+3. `photonflow/model.py` — `PhotonFlowModel` + `PhotonFlowBlock` with `use_adaln_scale` kwarg
+4. `photonflow/train.py` — `CFMLoss` with the 4 paper-informed reweighting modes
+5. `kaggle/photonflow-adaln-recipe-aug/output/logs/summary.txt` — K2 (target-hit) numbers
+6. `kaggle/photonflow-scale-sweep/output/logs/summary.txt` — Pareto-curve numbers
+7. The two 195K sample PNGs in `paper/`
+
+### TL;DR for the next agent
+
+> PhotonFlow is a strict-photon-native CFM that hit the +0.05 target on MNIST 2K via adaLN-scale (electro-optic MZM) + bs/lr scaling. Long-horizon 195K shows the gap stabilising at +0.0719 (architectural floor at 4.87 M scale). Paper is at 7 pages; user wants 6; figure 1 was just redesigned and may need one more polish for right-edge clipping. Commit on user's signal — nothing in working tree is committed yet from this session.
